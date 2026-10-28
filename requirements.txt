@@ -1,0 +1,8 @@
+torch>=2.6          # 2.6+ fixes a weights_only loading flaw in torch.load
+numpy
+pandas
+transformers>=4.48
+datasets
+pylate>=1.5         # pretrained ColBERT backbones (lightonai/LateOn etc.)
+pypdf>=5            # optional: PDF ingestion in nyaya.rag
+pytest
