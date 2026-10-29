@@ -21,6 +21,7 @@ Axon splits the query into its conditions and scores each condition separately. 
 ## Contents
 
 - [Use it](#use-it)
+- [The full RAG system](#the-full-rag-system)
 - [How it works](#how-it-works)
 - [Results](#results)
 - [What did not work](#what-did-not-work)
@@ -56,8 +57,41 @@ for r in ax.rerank("Find a jacket that: 1. is waterproof, 2. is lightweight, 3. 
   - the document passages it matched, taken from ColBERT's own token alignments
   - `weakest`, naming the condition the document satisfies least
 - **Methods.** `method="grouped"` is the validated default. `"competitive"` is Competitive MaxSim (below), experimental. `"colbert"` is the baseline.
-- **HTTP service:** `AXON_MODEL=lightonai/LateOn uvicorn nyaya.server:app`, then `POST /rerank`. Request sizes are capped; it binds to localhost and has no authentication of its own.
+- **HTTP service:** `AXON_MODEL=lightonai/LateOn uvicorn nyaya.server:app`, then `POST /rerank`, or `POST /ask` for full answers. It has optional API-key auth (`AXON_API_KEY`), a per-client rate limit, request size caps and Prometheus metrics at `/metrics`, and it binds to localhost.
 - **Demo:** `python app.py` shows ColBERT and Axon side by side with evidence. It runs as a Hugging Face Space.
+
+## The full RAG system
+
+Every stage is written in this repository; the only outside pieces are the ColBERT model, the language model and the server that runs it.
+
+| Stage | What it does | Where |
+|---|---|---|
+| Chunking | Paragraph-first, 220-word chunks with a 40-word overlap; .txt, .md and .pdf files; symbolic links are not followed | `nyaya/rag.py` |
+| Indexing | ColBERT token vectors for every chunk (no pickle; tensors only), BM25, and an optional PLAID index for approximate search over large collections | `nyaya/rag.py`, `build_axon` |
+| Retrieval | BM25 and ColBERT search fused with reciprocal-rank fusion, then Axon re-ranking with per-condition evidence | `AxonRAG.retrieve` |
+| Guardrails, input | Retrieved text is escaped and marked as data, never instructions. A scanner withholds passages that look like instructions aimed at the model (prompt injection) | `nyaya/guards.py` |
+| Generation | Any OpenAI-compatible server: vLLM, SGLang, a hosted API, or `nyaya.hf_server` (one request at a time, the baseline). Answers stream; each must cite its sources or reply INSUFFICIENT. For multi-condition questions, Axon's evidence certificate is passed to the model | `nyaya/llm.py`, `AxonRAG.answer` |
+| Guardrails, output | Citations to sources that were never shown are removed; sentences without a citation are reported | `guards.check_answer` |
+| Monitoring | Time to first token, inter-token latency, stage timings and guardrail events per answer, in Prometheus format at `/metrics` | `nyaya/metrics.py` |
+| Load testing | Concurrency sweep with TTFT, inter-token latency, time per output token, throughput, GPU memory and utilisation, plus the server's own metrics | `nyaya/llm_bench.py` |
+| Fine-tuning | LoRA written out in full (no PEFT), fp16 with loss scaling for T4s, loss on the reply only, merged back into the weights so any server can load the result | `nyaya/lora.py` |
+| Evaluation | HotpotQA answers (exact match, F1), citation precision and recall, abstention when the evidence is withheld, prompt-injection attack success, and the MultiConIR condition check | `nyaya/rag_eval.py`, `scripts/round5.py` |
+
+```bash
+python -m nyaya.rag build --src docs/ --out index/ --model lightonai/LateOn --plaid
+vllm serve Qwen/Qwen3-4B-Instruct-2507 --dtype half --max-model-len 4096 &     # or any OpenAI-compatible server
+export NYAYA_LLM_BASE_URL=http://localhost:8000/v1 NYAYA_LLM_MODEL=Qwen/Qwen3-4B-Instruct-2507
+python -m nyaya.rag ask --index index/ "linen or cotton shirt; for summer; made in India"
+```
+
+**Results pending (round 5).** `scripts/round5.py` measures all of this on Kaggle T4s in one unattended run. The questions and test sets were fixed before running:
+- serving speed with vLLM against the one-request-at-a-time baseline
+- answer quality, citations and abstention on 500 + 200 HotpotQA questions
+- attack success against three defence levels
+- whether Axon's certificate helps the LLM name the condition a document breaks
+- whether the fine-tuned generator beats the base model
+
+**Condition-level abstention.** For a multi-condition question, the generator sees, for every source, how strongly each condition was matched and by which passage. This lets it say which condition no source satisfies instead of answering anyway. Round 5 tests it on MultiConIR documents that satisfy all ten conditions or break exactly one. The test compares the LLM alone with the LLM given the certificate, and includes a reference with no LLM: Axon alone, with a threshold fixed on separate documents.
 
 ## How it works
 
@@ -127,6 +161,11 @@ These are reported because they are informative, and because the obvious next id
 | LIMIT (Weller et al., ICLR 2026); Agarwal et al., *Retrieval Needs Multivectors* (2026) | Theory and benchmarks showing single vectors fail on combination queries; motivated the AND experiments. |
 | Killingback et al. (2026) | MaxSim as an aggregation of soft-ORs; Signed MaxSim for negation. |
 | EXCISE (Ali et al., 2026) | Query-side exclusion (NOT) for late interaction; complementary to conditions combined by AND. |
+| Slot Attention (Locatello et al., 2020); capsule routing | The mechanism behind Competitive MaxSim: a softmax over the competitors (slots there, conditions here), so they compete for each input. Applying it across a query's conditions inside late-interaction scoring is, to our knowledge, new. |
+| AligneR, *Multi-Vector Retrieval as Sparse Alignment* (Qian et al., 2022) | Learned, sparse query-token-to-document-token alignments in multi-vector retrieval; per token and trained, not a competition between conditions. |
+| Word Mover's Distance (Kusner et al., 2015); optimal-transport text matching; coverage penalties in translation (Tu et al., 2016) | The same intuition (evidence should not be spent twice) in other settings. |
+| Shin et al., *Unbalanced Optimal Transport for Efficient Visual Document Retrieval* (arXiv 2610.23929, 2026) | Optimal transport used to compress document pages before standard MaxSim; query-independent and aimed at efficiency, so unrelated to evidence sharing between conditions. |
+| Edy et al., *Working Notes on Late Interaction Dynamics* (ECIR 2026 workshop) | Observes that MaxSim uses only the single best token per query token and leaves a better operator to future work; no multi-condition evaluation. |
 
 ## Scope and limitations
 
@@ -134,6 +173,8 @@ These are reported because they are informative, and because the obvious next id
 - **Two effects are not yet separated.** Encoding each condition on its own, and giving each condition equal weight, are not separated by an ablation.
 - **Numbers and ranges are not understood.** "Under 2 kg" or "after 2010" are matched as words, not compared as quantities, so filter numeric constraints with structured metadata.
 - **Query splitting is rule-based** unless the optional LLM planner is used. It works for numbered or semicolon-separated conditions and, with sentence splitting, for descriptive queries; free-form queries need an LLM planner.
+- **The guardrails are heuristics.** The injection scanner matches common phrasings. Round 5 measures how many planted attacks it catches and how many clean passages it flags, and some test attacks are worded to avoid it. The defended prompt lowers attack success but does not prevent it.
+- **Fine-tuning data are from HotpotQA** (gold and distractor paragraphs from the dataset, not this retriever's output), so the fine-tuned generator is tuned to that kind of question.
 - **One run per configuration.** Scoring is deterministic given the weights; the intervals reflect variation over documents, not over training runs.
 
 ## Reproduce
@@ -162,21 +203,29 @@ python scripts/eval_suite.py --zero_shot lightonai/LateOn --variant colbert_grou
 
 Datasets (MultiConIR, LIMIT, NanoBEIR, MS MARCO triples) and models are downloaded at run time by `scripts/prep_data.py`; their own licenses apply.
 
-**RAG over your own files** (hybrid BM25 + Nyaya retrieval, answers with citations from any OpenAI-compatible endpoint):
+**Round 4** (Competitive MaxSim, localization, lead-in control, latency; about 2–2.5 h) and **round 5** (the full RAG system; about 3–4 h), Kaggle T4 x2, internet on:
 
 ```bash
-python -m nyaya.rag build --src docs/ --ckpt runs/model.pt --out index/
-export NYAYA_LLM_BASE_URL=http://localhost:8080/v1      # local server, or an https endpoint
-export NYAYA_LLM_MODEL=<model name>                       # NYAYA_LLM_API_KEY only if the endpoint needs one
-python -m nyaya.rag ask --index index/ --ckpt runs/model.pt "linen or cotton shirt; for summer; made in India"
+python scripts/round4.py            # writes results/ROUND4.md
+python scripts/round5.py            # writes results/ROUND5.md
 ```
+
+Checkpoints trained with `nyaya.train` still work with the RAG commands through `--ckpt`.
 
 ## Repository layout
 
 ```
 nyaya/axon.py         Axon API: index, rerank, per-condition evidence certificates
 nyaya/planner.py      condition splitting: rules, or an LLM with a no-invented-requirements check
-nyaya/server.py       HTTP re-ranking service (FastAPI)
+nyaya/server.py       HTTP service: /rerank, /ask, /metrics; API key, rate limit, size caps
+nyaya/rag.py          chunking, indexing (exact or PLAID), hybrid retrieval, guarded generation
+nyaya/guards.py       prompt format, prompt-injection scanner, citation checker
+nyaya/llm.py          OpenAI-compatible client with streaming and per-request timing
+nyaya/llm_bench.py    serving load test: TTFT, inter-token latency, throughput, GPU use
+nyaya/metrics.py      Prometheus metrics, no dependencies
+nyaya/hf_server.py    one-request-at-a-time transformers server (baseline and fallback)
+nyaya/lora.py         LoRA fine-tuning and merging, fp16 on T4
+nyaya/rag_eval.py     HotpotQA, injection and condition-check evaluation; fine-tuning data
 nyaya/scoring.py      MaxSim, ColBERT mean, soft-min, condition-grouped and Competitive MaxSim scoring
 nyaya/model.py        backbones (tiny, Hugging Face, PyLate ColBERT checkpoints), clause splitter, retriever
 nyaya/benchmarks.py   MultiConIR (official win-rate metrics, paired outputs), NanoBEIR, localization, latency
@@ -184,15 +233,16 @@ nyaya/data_andor.py   synthetic AND-of-OR collections with condition-breaking ha
 nyaya/evaluate.py     exact late-interaction search, recall / nDCG / MRR, BEIR and LIMIT loaders
 nyaya/train.py        contrastive training (CPU or GPU, fp16), all variants
 nyaya/bm25.py         BM25
-nyaya/rag.py          indexing, hybrid search, cited answers
 scripts/round2.py     main experiment: three models, paired bootstrap intervals
 scripts/round4.py     Competitive MaxSim, violated-condition localization, lead-in control, latency
+scripts/round5.py     the full RAG system: vLLM serving, answers, guardrails, fine-tuning (one run)
+scripts/r5_steps.py   round 5 steps: retrieve, training data, generate, benchmark
 app.py                demo: ColBERT vs Axon with evidence (Gradio)
 pyproject.toml        package (pip install), extras for server, demo, evaluation
 scripts/kaggle_run.py multi-GPU job queue for unattended runs (training-free + fine-tuning)
 scripts/eval_suite.py one evaluation entry point for checkpoints and released models
 scripts/prep_data.py  dataset and model downloads
-tests/                scoring, evidence, planner and splitter tests
+tests/                scoring, evidence, planner, guardrail, metrics, LoRA and server tests
 .github/workflows/    CI: lint and tests on CPU
 ```
 
@@ -201,7 +251,10 @@ tests/                scoring, evidence, planner and splitter tests
 - Checkpoints and indexes are loaded with `torch.load(..., weights_only=True)`, so they can hold only tensors and plain data. The BM25 index is rebuilt from text, and no pickled objects are written or read. Keep `torch>=2.6`: earlier versions have a known flaw in `weights_only` loading.
 - `NYAYA_LLM_API_KEY` is read from the environment only, is sent only when set, and is refused over plain http to non-local hosts.
 - Retrieved text is HTML-escaped inside `<source>` tags before it reaches the LLM, and the system prompt treats sources as data. LLM output is printed, never executed. As with any RAG system, indexed documents can still try to influence the answer, so index only content you trust.
-- The experiment runner quotes every user-supplied value before it reaches the shell.
+- Retrieved passages that look like instructions to the model are withheld by an input scanner, and citations to sources that were never shown are removed from answers (`nyaya/guards.py`). Round 5 measures attack success with and without these defences.
+- The HTTP service supports an API key (`AXON_API_KEY`, compared in constant time), a per-client rate limit and request size caps. Error replies do not expose internals. It binds to localhost by default; put it behind TLS before exposing it.
+- Fine-tuned weights are saved as safetensors (no pickle).
+- The experiment runner quotes every user-supplied value before it reaches the shell, and runs servers and installs without a shell.
 
 ## Experiment log
 

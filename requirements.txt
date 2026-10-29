@@ -1,7 +1,11 @@
 torch>=2.6          # 2.6+ fixes a weights_only loading flaw in torch.load
 numpy
 pandas
-transformers>=4.48
+transformers>=4.51       # Qwen3 support for the generator
+safetensors
+fastapi>=0.110           # nyaya.server, nyaya.hf_server
+uvicorn>=0.29
+httpx                    # tests
 datasets
 pylate>=1.5         # pretrained ColBERT backbones (lightonai/LateOn etc.)
 pypdf>=5            # optional: PDF ingestion in nyaya.rag

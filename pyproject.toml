@@ -14,8 +14,9 @@ dependencies = ["torch>=2.6", "numpy", "pylate>=1.5"]
 
 [project.optional-dependencies]
 server = ["fastapi>=0.110", "uvicorn>=0.29"]
+llm = ["transformers>=4.51", "safetensors", "fastapi>=0.110", "uvicorn>=0.29"]
 demo = ["gradio>=4"]
-eval = ["pandas", "datasets", "transformers>=4.48", "pypdf>=5"]
+eval = ["pandas", "datasets", "transformers>=4.51", "safetensors", "pypdf>=5"]
 dev = ["pytest", "pyflakes", "httpx"]
 
 [project.urls]

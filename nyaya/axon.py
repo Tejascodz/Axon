@@ -126,6 +126,28 @@ class Axon:
             offsets = None
         return Index(list(documents), D, M, offsets)
 
+    def subset(self, index: Index, ids: list[int]) -> Index:
+        """A view of `index` restricted to `ids` (e.g. first-stage candidates), in that order."""
+        t = torch.as_tensor(ids, dtype=torch.long, device=index.D.device)
+        offs = [index.offsets[i] for i in ids] if index.offsets else None
+        return Index([index.texts[i] for i in ids], index.D[t], index.M[t], offs)
+
+    @torch.no_grad()
+    def query_vectors(self, query: str):
+        """The query's token vectors as a [L, d] float32 array (for an approximate first stage)."""
+        with self._ctx():
+            Q, Qm, _, _ = self._plain.encode([query], "q")
+        return Q[0][Qm[0]].float().cpu().numpy()
+
+    @torch.no_grad()
+    def search(self, query: str, index: Index, k: int = 100, chunk: int = 4096) -> list[int]:
+        """Exact late-interaction search over a whole index (plain ColBERT scoring)."""
+        with self._ctx():
+            q = self._plain.encode([query], "q")
+            s = torch.cat([self._plain.score(q, (index.D[i:i + chunk], index.M[i:i + chunk], None, None))[0].float()
+                           for i in range(0, index.D.shape[0], chunk)])
+        return s.topk(min(k, s.shape[0])).indices.tolist()
+
     @torch.no_grad()
     def rerank(self, query: str, documents, top_k: int | None = None, conditions: list[str] | None = None,
                explain: bool = True, method: str | None = None) -> list[Result]:
