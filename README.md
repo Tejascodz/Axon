@@ -20,6 +20,7 @@ Axon splits the query into its conditions and scores each condition separately. 
 
 ## Contents
 
+- [Use it](#use-it)
 - [How it works](#how-it-works)
 - [Results](#results)
 - [What did not work](#what-did-not-work)
@@ -29,6 +30,34 @@ Axon splits the query into its conditions and scores each condition separately. 
 - [Repository layout](#repository-layout)
 - [Security notes](#security-notes)
 - [Experiment log](#experiment-log)
+
+## Use it
+
+```bash
+pip install "git+https://github.com/Tejascodz/Axon"            # add [server] or [demo] for those extras
+```
+
+```python
+from nyaya.axon import Axon
+
+ax = Axon("lightonai/LateOn")                    # any PyLate ColBERT checkpoint; loads once
+index = ax.index(documents)                      # encode candidates once, reuse for many queries
+for r in ax.rerank("Find a jacket that: 1. is waterproof, 2. is lightweight, 3. has a hood", index, top_k=5):
+    print(f"{r.score:.3f}  {r.text[:60]}")
+    for c in r.conditions:                       # evidence certificate: one entry per condition
+        print(f"    {c.condition}: {c.relative:.0%} of a perfect match, evidence {[e[2] for e in c.evidence]}")
+```
+
+- **Simple queries never change.** A query with one condition is scored exactly like the underlying ColBERT model.
+- **Conditions** come from numbered lists, semicolons, new lines or sentences. Pass `conditions=[...]` yourself, or use `nyaya.planner.llm_conditions(query)`. It asks any OpenAI-compatible model to split a free-form query and rejects any split that adds words the user never typed.
+- **Evidence certificate.** Every result lists, per condition:
+  - its score
+  - its score relative to the condition matched against its own text
+  - the document passages it matched, taken from ColBERT's own token alignments
+  - `weakest`, naming the condition the document satisfies least
+- **Methods.** `method="grouped"` is the validated default. `"competitive"` is Competitive MaxSim (below), experimental. `"colbert"` is the baseline.
+- **HTTP service:** `AXON_MODEL=lightonai/LateOn uvicorn nyaya.server:app`, then `POST /rerank`. Request sizes are capped; it binds to localhost and has no authentication of its own.
+- **Demo:** `python app.py` shows ColBERT and Axon side by side with evidence. It runs as a Hugging Face Space.
 
 ## How it works
 
@@ -41,6 +70,13 @@ s(q, d) = \frac{1}{C}\sum_{c=1}^{C} \frac{1}{L_c} \sum_{t=1}^{L_c} \max_{k} \lan
 $$
 
 Standard ColBERT scoring is the same inner MaxSim, averaged over all query tokens at once, so long or wordy conditions get more weight. Documents are encoded and indexed exactly as before. Only the query side and the final aggregation change (`nyaya/scoring.py`, `score_grouped`).
+
+**Competitive MaxSim (experimental, results pending).** In ColBERT, any number of query tokens may use the same document token as their best match, so a document that lacks one condition can still score well on it by reusing evidence that belongs to another condition. Competitive MaxSim shares every document token out among the query's conditions:
+- Each token's share is a softmax over conditions of how well it fits each one, with temperature τ.
+- A query token may only use its own condition's share of a document token.
+- With one condition the share is always 1, so the rule is exactly MaxSim.
+- Evidence that serves two conditions is split between them; distinct evidence costs nothing (`tests/test_scoring.py`).
+- It needs no training and costs about the same as MaxSim (`nyaya/scoring.py`, `competitive_maxsim`). It is tested in `scripts/round4.py` with τ fixed in advance.
 
 ## Results
 
@@ -96,7 +132,8 @@ These are reported because they are informative, and because the obvious next id
 
 - **What is tested is ranking, not first-stage search.** MultiConIR's official tasks compare the relevant document against its own hard negatives, a reranking-style setting. Whether condition-aware scoring also helps first-stage retrieval over a whole collection has not been tested on real data; on the synthetic first-stage test it was slightly below plain LateOn (Recall@10 0.475 vs 0.495). Yin et al. report that decomposition hurts first-stage retrieval for dense models.
 - **Two effects are not yet separated.** Encoding each condition on its own, and giving each condition equal weight, are not separated by an ablation.
-- **Query splitting is rule-based.** It works for numbered or semicolon-separated conditions and, with sentence splitting, for descriptive queries; free-form queries need an LLM planner.
+- **Numbers and ranges are not understood.** "Under 2 kg" or "after 2010" are matched as words, not compared as quantities, so filter numeric constraints with structured metadata.
+- **Query splitting is rule-based** unless the optional LLM planner is used. It works for numbered or semicolon-separated conditions and, with sentence splitting, for descriptive queries; free-form queries need an LLM planner.
 - **One run per configuration.** Scoring is deterministic given the weights; the intervals reflect variation over documents, not over training runs.
 
 ## Reproduce
@@ -137,19 +174,26 @@ python -m nyaya.rag ask --index index/ --ckpt runs/model.pt "linen or cotton shi
 ## Repository layout
 
 ```
-nyaya/scoring.py      MaxSim, ColBERT mean, soft-min, condition-grouped scoring
+nyaya/axon.py         Axon API: index, rerank, per-condition evidence certificates
+nyaya/planner.py      condition splitting: rules, or an LLM with a no-invented-requirements check
+nyaya/server.py       HTTP re-ranking service (FastAPI)
+nyaya/scoring.py      MaxSim, ColBERT mean, soft-min, condition-grouped and Competitive MaxSim scoring
 nyaya/model.py        backbones (tiny, Hugging Face, PyLate ColBERT checkpoints), clause splitter, retriever
-nyaya/benchmarks.py   MultiConIR (official win-rate metrics, paired outputs), NanoBEIR
+nyaya/benchmarks.py   MultiConIR (official win-rate metrics, paired outputs), NanoBEIR, localization, latency
 nyaya/data_andor.py   synthetic AND-of-OR collections with condition-breaking hard negatives
 nyaya/evaluate.py     exact late-interaction search, recall / nDCG / MRR, BEIR and LIMIT loaders
 nyaya/train.py        contrastive training (CPU or GPU, fp16), all variants
 nyaya/bm25.py         BM25
 nyaya/rag.py          indexing, hybrid search, cited answers
 scripts/round2.py     main experiment: three models, paired bootstrap intervals
+scripts/round4.py     Competitive MaxSim, violated-condition localization, lead-in control, latency
+app.py                demo: ColBERT vs Axon with evidence (Gradio)
+pyproject.toml        package (pip install), extras for server, demo, evaluation
 scripts/kaggle_run.py multi-GPU job queue for unattended runs (training-free + fine-tuning)
 scripts/eval_suite.py one evaluation entry point for checkpoints and released models
 scripts/prep_data.py  dataset and model downloads
-tests/                scoring and splitter tests
+tests/                scoring, evidence, planner and splitter tests
+.github/workflows/    CI: lint and tests on CPU
 ```
 
 ## Security notes

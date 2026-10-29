@@ -75,7 +75,7 @@ def score(Q, D, kind="softmin", q_mask=None, d_mask=None, tau=0.1, alpha=None, g
 
 
 def score_grouped(Q, D, kind="softmin", q_mask=None, d_mask=None, tau=0.1, alpha=None, within="mean",
-                  ceiling=None):
+                  ceiling=None, compete=None):
     """Clause-grouped token late interaction.
 
     Q      : [B, C, L, d]  token vectors of each query clause (C clauses, up to L tokens each)
@@ -86,12 +86,61 @@ def score_grouped(Q, D, kind="softmin", q_mask=None, d_mask=None, tau=0.1, alpha
     ceiling : optional [B, C], each clause's score against its own text. Dividing by it puts
               clauses on a common scale (1 = as well matched as the clause matches itself)
               before they are compared or combined.
+    compete : optional temperature; if set, document tokens are shared out among conditions
+              (Competitive MaxSim, see competitive_maxsim) instead of being reusable by all.
     """
+    clause = clause_scores(Q, D, q_mask, d_mask, within, ceiling, compete)
+    if within == "flat":                                                      # already aggregated over tokens
+        return clause
+    if q_mask is None:
+        q_mask = torch.ones(Q.shape[:3], dtype=torch.bool, device=Q.device)
+    return aggregate(clause, kind, q_mask.any(-1), tau, alpha)
+
+
+def competitive_maxsim(Q, D, q_mask, d_mask, tau):
+    """Competitive MaxSim. Every document token is shared out among the query's conditions
+    (softmax over conditions of how strongly the token matches each condition, temperature
+    `tau`), and a query token can only use the share of a document token that belongs to its
+    own condition. A document therefore cannot satisfy two conditions with the same evidence.
+    With one condition every share is 1 and this is exactly MaxSim.
+
+    Q [B, C, L, d], D [N, K, d] -> best match per query token [B, N, C, L] and the index of
+    the document token it used [B, N, C, L]."""
+    B, C, L, d = Q.shape
+    if Q.dtype != D.dtype:
+        Q = Q.to(D.dtype)
+    sim = torch.einsum("bcd,nkd->bnck", Q.reshape(B, C * L, d), D).float().view(B, -1, C, L, D.shape[1])
+    dm = None if d_mask is None else d_mask[None, :, None, None, :]
+    qm = q_mask[:, None, :, :, None]
+    r = sim.masked_fill(~qm, NEG).amax(3)                                    # [B, N, C, K] token-to-condition fit
+    r = r.masked_fill(~q_mask.any(-1)[:, None, :, None], float("-inf"))
+    share = torch.softmax(r / tau, dim=2)                                    # conditions compete for each token
+    sim = sim * share[:, :, :, None, :]
+    if dm is not None:
+        sim = sim.masked_fill(~dm, NEG)
+    best, idx = sim.max(-1)
+    return best, idx
+
+
+def clause_scores(Q, D, q_mask=None, d_mask=None, within="mean", ceiling=None, compete=None, return_index=False):
+    """Per-condition scores [B, N, C] (or [B, N] for within='flat'), before conditions are combined."""
     B, C, L, d = Q.shape
     if q_mask is None:
         q_mask = torch.ones(B, C, L, dtype=torch.bool, device=Q.device)
-    S = maxsim(Q.reshape(B, C * L, d), D, d_mask).view(B, -1, C, L)          # [B, N, C, L]
+    if compete:
+        S, idx = competitive_maxsim(Q, D, q_mask, d_mask, compete)
+    else:
+        if Q.dtype != D.dtype:
+            Q = Q.to(D.dtype)
+        sim = torch.einsum("bcd,nkd->bnck", Q.reshape(B, C * L, d), D)
+        if d_mask is not None:
+            sim = sim.masked_fill(~d_mask[None, :, None, :], NEG)
+        S, idx = sim.max(-1)
+        S, idx = S.float().view(B, -1, C, L), idx.view(B, -1, C, L)
     m = q_mask[:, None].to(S.dtype)
+    if within == "flat":                         # ablation: clauses encoded apart, every token weighted equally
+        out = (S * m).sum((-1, -2)) / m.sum((-1, -2)).clamp(min=1.0)
+        return (out, S, idx) if return_index else out
     if within == "mean":
         clause = (S * m).sum(-1) / m.sum(-1).clamp(min=1.0)
     elif within == "max":
@@ -100,7 +149,7 @@ def score_grouped(Q, D, kind="softmin", q_mask=None, d_mask=None, tau=0.1, alpha
         raise ValueError(f"unknown within-clause rule {within}")
     if ceiling is not None:
         clause = clause / ceiling[:, None, :].float().clamp(min=1e-3)
-    return aggregate(clause, kind, q_mask.any(-1), tau, alpha)
+    return (clause, S, idx) if return_index else clause
 
 
 def score_chunked(Q, D, chunk: int = 4096, **kw) -> torch.Tensor:

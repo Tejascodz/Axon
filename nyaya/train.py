@@ -43,7 +43,23 @@ VARIANTS = {
     # clause scores divided by each clause's score against its own text, then the soft AND
     "nyaya_cal":       ("clause_tokens", "token", "softmin", "mean", True),
     "grouped_cal":     ("clause_tokens", "token", "chamfer", "mean", True),
+    # ablations: ColBERT on the query without its lead-in; clauses encoded apart but token-weighted
+    "colbert_nolead":  ("token", "token", "chamfer", "mean", False, None, True),
+    "separate_flat":   ("clause_tokens", "token", "chamfer", "flat"),
+    # Competitive MaxSim: document tokens are shared out among conditions (temperature in the name)
+    "competitive":     ("clause_tokens", "token", "chamfer", "mean", False, 0.1),
+    "competitive_t03": ("clause_tokens", "token", "chamfer", "mean", False, 0.03),
+    "competitive_t3":  ("clause_tokens", "token", "chamfer", "mean", False, 0.3),
 }
+
+
+def variant_kwargs(name):
+    """Constructor keyword arguments for NyayaRetriever from a VARIANTS entry."""
+    q_mode, d_mode, agg, *rest = VARIANTS[name]
+    rest += [None] * (4 - len(rest))
+    within, calibrate, compete, strip = rest[:4]
+    return dict(q_mode=q_mode, d_mode=d_mode, agg=agg, within=within or "mean", calibrate=bool(calibrate),
+                compete=compete, strip_leadin=bool(strip))
 
 
 class AndOrStream:
@@ -102,7 +118,7 @@ class TripleStream:
 
 
 def build_model(args, vocab_texts=None):
-    q_mode, d_mode, agg, *rest = VARIANTS[args.variant]
+    kw = variant_kwargs(args.variant)
     if args.backbone == "tiny":
         tok = WordTokenizer(vocab_texts)
         bb = TinyBackbone(len(tok.itos), hidden=args.hidden, layers=args.layers)
@@ -114,9 +130,8 @@ def build_model(args, vocab_texts=None):
     else:
         bb = HFBackbone(args.backbone, gradient_checkpointing=args.grad_ckpt)
         tokenize = bb.tokenize
-    return NyayaRetriever(bb, tokenize, q_mode, d_mode, agg, dim=args.dim, q_slots=args.q_slots,
-                          d_slots=args.d_slots, gated=not args.no_gates, tau=args.tau,
-                          within=rest[0] if rest else "mean", calibrate=len(rest) > 1 and rest[1])
+    return NyayaRetriever(bb, tokenize, dim=args.dim, q_slots=args.q_slots, d_slots=args.d_slots,
+                          gated=not args.no_gates, tau=args.tau, **kw)
 
 
 def train(model, streams, steps, batch, lr, device, fp16=False, slot_div=0.1, log_every=100,

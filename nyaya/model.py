@@ -225,7 +225,7 @@ def split_clauses(text: str, max_clauses: int = 12, mode: str = "auto") -> list[
 class NyayaRetriever(nn.Module):
     def __init__(self, backbone, tokenize, q_mode="slots", d_mode="slots", agg="softmin", dim=128,
                  q_slots=8, d_slots=16, gated=True, tau=0.1, learn_tau=False, scale=20.0, within="mean",
-                 calibrate=False):
+                 calibrate=False, compete=None, strip_leadin=False):
         super().__init__()
         self.backbone = backbone
         self.tokenize = tokenize
@@ -248,7 +248,8 @@ class NyayaRetriever(nn.Module):
         self.log_scale = nn.Parameter(torch.tensor(math.log(scale)))
         self.alpha_logit = nn.Parameter(torch.tensor(-1.0)) if agg == "hybrid" else None
         self.config = dict(q_mode=q_mode, d_mode=d_mode, agg=agg, dim=dim, q_slots=q_slots,
-                           d_slots=d_slots, gated=gated, tau=tau, within=within, calibrate=calibrate)
+                           d_slots=d_slots, gated=gated, tau=tau, within=within, calibrate=calibrate,
+                           compete=compete, strip_leadin=strip_leadin)
 
     @property
     def tau(self):
@@ -272,6 +273,8 @@ class NyayaRetriever(nn.Module):
             return self._encode_clauses(texts, max_len)
         if side == "q" and self.config["q_mode"] == "clause_tokens":
             return self._encode_clause_tokens(texts, max_len)
+        if side == "q" and self.config.get("strip_leadin"):     # ablation: same text minus the query's lead-in
+            texts = ["; ".join(split_clauses(t, mode=self.clause_mode)) for t in texts]
         h, mask = self._tokens(texts, side, max_len)
         return (self.q_side if side == "q" else self.d_side)(h, mask)
 
@@ -293,9 +296,13 @@ class NyayaRetriever(nn.Module):
             o += len(g)
         return Q, mask, None, None
 
-    def _encode_clause_tokens(self, texts, max_len):
+    def encode_conditions(self, groups, max_len=128):
+        """Encode queries given as explicit condition lists, e.g. from an LLM query planner."""
+        return self._encode_clause_tokens(None, max_len, groups=groups)
+
+    def _encode_clause_tokens(self, texts, max_len, groups=None):
         """Token vectors kept per clause: [B, C, L, d] with a [B, C, L] mask (ColBERT tokens, grouped)."""
-        groups = [split_clauses(t, mode=self.clause_mode) for t in texts]
+        groups = groups if groups is not None else [split_clauses(t, mode=self.clause_mode) for t in texts]
         flat = [c for g in groups for c in g]
         h, am = self._tokens(flat, "q", max_len)
         v = F.normalize(self.out_proj(h), dim=-1)                                # [sum C, L, d]
@@ -330,9 +337,16 @@ class NyayaRetriever(nn.Module):
         if Q.dim() == 4:                                                         # clause-grouped tokens
             return scoring.score_grouped(Q, D, kind=self.agg, q_mask=q_mask, d_mask=d_mask,
                                          tau=self.tau, alpha=alpha, within=self.config.get("within", "mean"),
-                                         ceiling=gates)
+                                         ceiling=gates, compete=self.config.get("compete"))
         return scoring.score(Q, D, kind=self.agg, q_mask=q_mask, d_mask=d_mask,
                              tau=self.tau, alpha=alpha, gates=gates)
+
+    def clause_scores(self, q, d, return_index=False):
+        """Per-condition scores [B, N, C] for clause-grouped queries (no aggregation)."""
+        Q, q_mask, ceil, _ = q
+        D, d_mask, _, _ = d
+        return scoring.clause_scores(Q, D, q_mask, d_mask, self.config.get("within", "mean"), ceil,
+                                     self.config.get("compete"), return_index=return_index)
 
     def loss(self, queries, docs, labels, slot_div=0.0):
         """InfoNCE over all docs in the batch (positives + hard negatives of every query)."""

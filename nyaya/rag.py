@@ -48,7 +48,8 @@ def load_retriever(path: str, device: str | None = None) -> NyayaRetriever:
         tokenize = bb.tokenize
     m = NyayaRetriever(bb, tokenize, c["q_mode"], c["d_mode"], c["agg"], c["dim"], c["q_slots"],
                        c["d_slots"], c["gated"], c["tau"], within=c.get("within", "mean"),
-                       calibrate=c.get("calibrate", False))
+                       calibrate=c.get("calibrate", False), compete=c.get("compete"),
+                       strip_leadin=c.get("strip_leadin", False))
     m.load_state_dict(ck["state"])
     device = device or ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     return m.to(device).eval()

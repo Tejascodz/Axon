@@ -11,6 +11,8 @@ Suites
   multiconir  MultiConIR tasks 1-3 (needs data/MultiConIR)
   nanobeir    NanoBEIR subsets, ordinary search (downloads from Hugging Face)
   limit-small, limit   LIMIT (needs data/limit)
+  localization  which condition a near-miss document breaks (clause-grouped models only)
+  latency       re-ranking speed: docs/s to encode, ms per query over 100 candidates
 """
 import argparse
 import json
@@ -22,19 +24,17 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nyaya.benchmarks import NANO_DEFAULT, multiconir, nanobeir  # noqa: E402
+from nyaya.benchmarks import NANO_DEFAULT, latency, localization, multiconir, nanobeir  # noqa: E402
 from nyaya.data_andor import AndOrWorld  # noqa: E402
 from nyaya.evaluate import evaluate, load_beir  # noqa: E402
 from nyaya.model import NyayaRetriever, PyLateBackbone  # noqa: E402
 from nyaya.rag import load_retriever  # noqa: E402
-from nyaya.train import VARIANTS  # noqa: E402
+from nyaya.train import variant_kwargs  # noqa: E402
 
 
 def build_zero_shot(name, variant, query_length, tau):
-    q_mode, d_mode, agg, *rest = VARIANTS[variant]
     bb = PyLateBackbone(name, query_length=query_length)
-    return NyayaRetriever(bb, None, q_mode, d_mode, agg, dim=bb.hidden, tau=tau,
-                          within=rest[0] if rest else "mean", calibrate=len(rest) > 1 and rest[1])
+    return NyayaRetriever(bb, None, dim=bb.hidden, tau=tau, **variant_kwargs(variant))
 
 
 def main():
@@ -95,6 +95,15 @@ def main():
                 report["multiconir_pairs"] = pairs           # every comparison, for significance tests
                 return res
             run("multiconir", mc)
+        elif s == "localization":
+            def loc():
+                res = localization(model, os.path.join(args.data, "MultiConIR"), limit_rows=args.mc_rows)
+                if "hits" in res:
+                    report["localization_hits"] = res.pop("hits")
+                return res
+            run("localization", loc)
+        elif s == "latency":
+            run("latency", lambda: latency(model, os.path.join(args.data, "MultiConIR")))
         elif s == "nanobeir":
             run("nanobeir", lambda: nanobeir(model, args.nano))
         elif s in ("limit", "limit-small"):
