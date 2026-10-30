@@ -12,12 +12,15 @@ How it scores
     `conditions=[...]`, e.g. from an LLM planner). A query with one condition is scored exactly
     like the underlying ColBERT model, so simple queries never change.
   * "grouped": each condition's tokens are averaged, then conditions are averaged with equal weight.
-  * "competitive": as grouped, but document tokens are shared out among the conditions, so a
-    document cannot satisfy two conditions with the same evidence (Competitive MaxSim).
+  * "competitive": as grouped, but document tokens are shared out among the conditions
+    (Competitive MaxSim). Kept to reproduce a negative result: it is worse than "grouped" on
+    MultiConIR for all three models tested. Do not use it.
 What it returns
   For every result and condition: the condition's score, its score relative to the condition
   matched against its own text (1.0 = as good a match as the condition itself), and the
-  document passages that matched it. `weakest` names the condition with the lowest relative score.
+  document passages that matched it. `weakest` names the condition with the lowest relative score;
+  from one document alone it is a hint (right 24-38% of the time on MultiConIR, chance 10%),
+  much more reliable when compared against a document known to satisfy every condition.
 """
 from __future__ import annotations
 

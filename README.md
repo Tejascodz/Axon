@@ -16,7 +16,24 @@ Axon splits the query into its conditions and scores each condition separately. 
 
 (MultiConIR Task 1 win rate: how often the relevant document outranks a hard negative that breaks some conditions, averaged over queries with 1–10 conditions. Intervals are paired bootstrap over 2,307 documents.)
 
-**Main negative result.** Combining conditions with a fuzzy AND (a soft minimum, as suggested by recent theory on conjunctive retrieval) is much better than averaging on clean synthetic data. On real text it is worse than plain averaging, for all three models, with or without calibration. Details below.
+**What the gain is made of.** A control run later (round 4) changes how the table should be read. Plain ColBERT with only the query's lead-in removed ("Find a book that:") recovers much of the T1 gain:
+- **LateOn:** all of it (+0.046 vs +0.045).
+- **GTE-ModernColBERT:** half (+0.025 vs +0.050).
+- **mLateOn:** most of it (+0.027 vs +0.031).
+
+The part that only condition-aware scoring adds shows up in two places:
+- **Descriptive, natural-language queries (T3):** +0.020 / +0.077 / +0.091 over lead-in-removed ColBERT on the three models, every interval above zero.
+- **10-condition queries:** +0.033 on GTE-ModernColBERT and +0.036 on mLateOn.
+
+On LateOn, the benefit comes from encoding each condition on its own, not from weighting conditions equally; equal weighting is very slightly worse. Two practical lessons follow:
+- Strip boilerplate from multi-condition queries before scoring them with ColBERT.
+- Split descriptive queries into their conditions.
+
+**Main negative results.**
+- **Competitive MaxSim** makes conditions compete for each document token so that one piece of evidence cannot satisfy two conditions. It is worse than plain grouping on every model: T1 −0.077, −0.121 and −0.106, every interval below zero. The softer the competition, the smaller the loss, so on this benchmark sharing evidence between conditions helps rather than hurts.
+- **A fuzzy AND** (soft minimum) is much better than averaging on clean synthetic data, but worse on real text, for all three models, with or without calibration.
+
+Details below.
 
 ## Contents
 
@@ -56,7 +73,10 @@ for r in ax.rerank("Find a jacket that: 1. is waterproof, 2. is lightweight, 3. 
   - its score relative to the condition matched against its own text
   - the document passages it matched, taken from ColBERT's own token alignments
   - `weakest`, naming the condition the document satisfies least
-- **Methods.** `method="grouped"` is the validated default. `"competitive"` is Competitive MaxSim (below), experimental. `"colbert"` is the baseline.
+- **Methods.** `method="grouped"` is the default. `"colbert"` is the baseline. `"competitive"` (Competitive MaxSim) is kept only to reproduce its negative result; do not use it.
+- **How far to trust the certificate.**
+  - When a document can be compared with one known to satisfy every condition, the condition whose score dropped most is the broken one 54–82% of the time (chance 10%).
+  - From a single document alone, the `weakest` flag is right only 24–38% of the time, about as often as simple word overlap (26%). Treat it as a hint, not a verdict.
 - **HTTP service:** `AXON_MODEL=lightonai/LateOn uvicorn nyaya.server:app`, then `POST /rerank`, or `POST /ask` for full answers. It has optional API-key auth (`AXON_API_KEY`), a per-client rate limit, request size caps and Prometheus metrics at `/metrics`, and it binds to localhost.
 - **Demo:** `python app.py` shows ColBERT and Axon side by side with evidence. It runs as a Hugging Face Space.
 
@@ -105,12 +125,13 @@ $$
 
 Standard ColBERT scoring is the same inner MaxSim, averaged over all query tokens at once, so long or wordy conditions get more weight. Documents are encoded and indexed exactly as before. Only the query side and the final aggregation change (`nyaya/scoring.py`, `score_grouped`).
 
-**Competitive MaxSim (experimental, results pending).** In ColBERT, any number of query tokens may use the same document token as their best match, so a document that lacks one condition can still score well on it by reusing evidence that belongs to another condition. Competitive MaxSim shares every document token out among the query's conditions:
+**Competitive MaxSim (tested; it does not work).** In ColBERT, any number of query tokens may use the same document token as their best match, so a document that lacks one condition can still score well on it by reusing evidence that belongs to another condition. Competitive MaxSim shares every document token out among the query's conditions:
 - Each token's share is a softmax over conditions of how well it fits each one, with temperature τ.
 - A query token may only use its own condition's share of a document token.
 - With one condition the share is always 1, so the rule is exactly MaxSim.
 - Evidence that serves two conditions is split between them; distinct evidence costs nothing (`tests/test_scoring.py`).
-- It needs no training and costs about the same as MaxSim (`nyaya/scoring.py`, `competitive_maxsim`). It is tested in `scripts/round4.py` with τ fixed in advance.
+- It needs no training and costs about the same as MaxSim (`nyaya/scoring.py`, `competitive_maxsim`).
+- **Result:** with τ fixed in advance at 0.1, it is worse than plain grouping on all three models. The loss shrinks steadily as τ grows: τ 0.03 → −0.111, 0.1 → −0.077, 0.3 → −0.011 on LateOn. As τ grows, the rule approaches plain grouping. On MultiConIR, conditions share vocabulary and evidence for good reasons, so forcing them to split it removes real signal.
 
 ## Results
 
@@ -137,6 +158,41 @@ Paired differences (Nyaya − ColBERT, 95% bootstrap interval over documents):
 
 The gain grows with the number of conditions. It is near zero for single-condition queries, where both scorings are identical, and largest at 10 conditions.
 
+**Where the gain comes from** (round 4; paired differences, 95% intervals; full tables in `results/ROUND4.md`):
+
+| Model | Comparison | T1 mean | T1, 10 conditions | T2 monotonicity | T3 |
+| --- | --- | --- | --- | --- | --- |
+| LateOn | lead-in removed − ColBERT | +0.046 [+0.041, +0.050] | +0.058 [+0.043, +0.074] | +0.030 [+0.025, +0.036] | +0.011 [+0.001, +0.022] |
+| | grouping − lead-in removed | −0.001 [−0.006, +0.004] | +0.003 [−0.013, +0.020] | +0.008 [+0.002, +0.014] | +0.020 [+0.004, +0.036] |
+| GTE-ModernColBERT-v1 | lead-in removed − ColBERT | +0.025 [+0.021, +0.029] | +0.035 [+0.023, +0.046] | +0.018 [+0.014, +0.022] | −0.009 [−0.019, +0.002] |
+| | grouping − lead-in removed | +0.025 [+0.020, +0.029] | +0.033 [+0.018, +0.048] | +0.031 [+0.026, +0.037] | +0.077 [+0.060, +0.094] |
+| mLateOn | lead-in removed − ColBERT | +0.027 [+0.023, +0.031] | +0.076 [+0.060, +0.093] | +0.018 [+0.014, +0.022] | −0.001 [−0.010, +0.008] |
+| | grouping − lead-in removed | +0.004 [+0.000, +0.008] | +0.036 [+0.020, +0.051] | +0.004 [−0.001, +0.009] | +0.091 [+0.072, +0.109] |
+
+On LateOn, the two halves of grouping are separated further:
+- **Encoding each condition on its own, tokens weighted as in ColBERT,** versus lead-in removed: +0.003 T1 (interval includes zero), +0.012 T2 and +0.029 T3, both above zero.
+- **Then weighting conditions equally:** −0.003 T1, −0.004 T2 and −0.008 T3.
+
+So on LateOn the useful part is the separate encoding.
+
+**Which condition does a near-miss break?** On 1,455 documents that break exactly one known condition (chance 0.10):
+
+| Model | Grouping, comparing with the good document | Grouping, near-miss alone | Word overlap, near-miss alone | Competitive MaxSim, comparing / alone |
+| --- | --- | --- | --- | --- |
+| LateOn | 0.535 [0.510, 0.561] | 0.249 [0.227, 0.271] | 0.256 [0.234, 0.278] | 0.379 / 0.183 |
+| GTE-ModernColBERT-v1 | 0.544 [0.519, 0.570] | 0.377 [0.352, 0.402] | 0.256 | 0.337 / 0.258 |
+| mLateOn | 0.821 [0.801, 0.840] | 0.241 [0.219, 0.264] | 0.256 | 0.576 / 0.124 |
+
+**Cost.** Re-ranking 100 pre-encoded candidates on a T4, including query encoding, takes a median of:
+
+| Scoring | Median per query |
+| --- | --- |
+| ColBERT | 29.4 ms |
+| Grouping | 27.7 ms |
+| Competitive MaxSim | 31.2 ms |
+
+Condition-aware scoring adds no measurable cost.
+
 **Why condition-aware scoring is needed.** On a synthetic AND-of-OR product collection (20,000 documents, hard negatives that break one condition), released LateOn's Recall@10 falls from 0.98 with 2 conditions to 0.11 with 8 conditions, even with the full query visible.
 
 ## What did not work
@@ -149,7 +205,9 @@ These are reported because they are informative, and because the obvious next id
    - **Calibration closes most of the gap but never wins.** Dividing each condition's score by its score against its own text recovers most of the loss (−0.006 for LateOn), but it never beats plain averaging, and it is slightly worse on monotonicity for all three models (pre-registered test).
    - **Why:** real conditions are paraphrased and partly satisfied, so the weakest condition's score is often noise rather than a missing condition.
 2. **Compressing documents into a few learned "facet" vectors** (ConstBERT-style, with competitive slot attention). Trained from scratch on CPU, it scored below a single-vector dense model (Recall@10 0.30 vs 0.47).
-3. **Fine-tuning on synthetic multi-condition data** (LateOn, 1,500 steps, mixed 50/50 with MS MARCO, 2 seeds). It hurt ordinary search (NanoBEIR nDCG@10 0.602 → 0.49–0.53) and did not beat training-free Nyaya scoring on MultiConIR. The released weights are the better starting point.
+3. **Competitive MaxSim** (conditions compete for each document token; see How it works). It is worse than plain grouping on all three models, and fixed in advance as the round 4 test (T1 −0.077 / −0.121 / −0.106). It also localises the broken condition worse.
+4. **Naming the broken condition from one document alone.** Each condition's score is divided by its score against its own text, and the weakest is reported. It is no better than word overlap on LateOn (0.249 vs 0.256) or mLateOn (0.241), and better only on GTE-ModernColBERT (0.377).
+5. **Fine-tuning on synthetic multi-condition data** (LateOn, 1,500 steps, mixed 50/50 with MS MARCO, 2 seeds). It hurt ordinary search (NanoBEIR nDCG@10 0.602 → 0.49–0.53) and did not beat training-free Nyaya scoring on MultiConIR. The released weights are the better starting point.
 
 ## Relation to prior work
 
@@ -161,7 +219,7 @@ These are reported because they are informative, and because the obvious next id
 | LIMIT (Weller et al., ICLR 2026); Agarwal et al., *Retrieval Needs Multivectors* (2026) | Theory and benchmarks showing single vectors fail on combination queries; motivated the AND experiments. |
 | Killingback et al. (2026) | MaxSim as an aggregation of soft-ORs; Signed MaxSim for negation. |
 | EXCISE (Ali et al., 2026) | Query-side exclusion (NOT) for late interaction; complementary to conditions combined by AND. |
-| Slot Attention (Locatello et al., 2020); capsule routing | The mechanism behind Competitive MaxSim: a softmax over the competitors (slots there, conditions here), so they compete for each input. Applying it across a query's conditions inside late-interaction scoring is, to our knowledge, new. |
+| Slot Attention (Locatello et al., 2020); capsule routing | The mechanism behind Competitive MaxSim: a softmax over the competitors (slots there, conditions here), so they compete for each input. We found no prior application across a query's conditions inside late-interaction scoring. Tested here, it does not help (round 4). |
 | AligneR, *Multi-Vector Retrieval as Sparse Alignment* (Qian et al., 2022) | Learned, sparse query-token-to-document-token alignments in multi-vector retrieval; per token and trained, not a competition between conditions. |
 | Word Mover's Distance (Kusner et al., 2015); optimal-transport text matching; coverage penalties in translation (Tu et al., 2016) | The same intuition (evidence should not be spent twice) in other settings. |
 | Shin et al., *Unbalanced Optimal Transport for Efficient Visual Document Retrieval* (arXiv 2610.23929, 2026) | Optimal transport used to compress document pages before standard MaxSim; query-independent and aimed at efficiency, so unrelated to evidence sharing between conditions. |
@@ -170,7 +228,7 @@ These are reported because they are informative, and because the obvious next id
 ## Scope and limitations
 
 - **What is tested is ranking, not first-stage search.** MultiConIR's official tasks compare the relevant document against its own hard negatives, a reranking-style setting. Whether condition-aware scoring also helps first-stage retrieval over a whole collection has not been tested on real data; on the synthetic first-stage test it was slightly below plain LateOn (Recall@10 0.475 vs 0.495). Yin et al. report that decomposition hurts first-stage retrieval for dense models.
-- **Two effects are not yet separated.** Encoding each condition on its own, and giving each condition equal weight, are not separated by an ablation.
+- **Much of the templated-query gain is boilerplate removal** (see "What the gain is made of"). Condition-aware scoring adds a clear, separate gain on descriptive queries and on 10-condition queries for two of three models.
 - **Numbers and ranges are not understood.** "Under 2 kg" or "after 2010" are matched as words, not compared as quantities, so filter numeric constraints with structured metadata.
 - **Query splitting is rule-based** unless the optional LLM planner is used. It works for numbered or semicolon-separated conditions and, with sentence splitting, for descriptive queries; free-form queries need an LLM planner.
 - **The guardrails are heuristics.** The injection scanner matches common phrasings. Round 5 measures how many planted attacks it catches and how many clean passages it flags, and some test attacks are worded to avoid it. The defended prompt lowers attack success but does not prevent it.
@@ -226,7 +284,7 @@ nyaya/metrics.py      Prometheus metrics, no dependencies
 nyaya/hf_server.py    one-request-at-a-time transformers server (baseline and fallback)
 nyaya/lora.py         LoRA fine-tuning and merging, fp16 on T4
 nyaya/rag_eval.py     HotpotQA, injection and condition-check evaluation; fine-tuning data
-nyaya/scoring.py      MaxSim, ColBERT mean, soft-min, condition-grouped and Competitive MaxSim scoring
+nyaya/scoring.py      MaxSim, ColBERT mean, soft-min, condition-grouped and (negative result) Competitive MaxSim scoring
 nyaya/model.py        backbones (tiny, Hugging Face, PyLate ColBERT checkpoints), clause splitter, retriever
 nyaya/benchmarks.py   MultiConIR (official win-rate metrics, paired outputs), NanoBEIR, localization, latency
 nyaya/data_andor.py   synthetic AND-of-OR collections with condition-breaking hard negatives
@@ -300,6 +358,15 @@ Full LIMIT (50k documents): R@2 0.744, R@10 0.898. NanoBEIR (SciFact, NFCorpus, 
 | grouped + soft AND | 0.993 / 0.968 | 0.625 | 0.494 | 0.679 |
 
 **MultiConIR, calibrated variants** (T1 mean; LateOn / GTE-ModernColBERT / mLateOn): grouped with calibrated clauses 0.736 / 0.763 / 0.847; soft AND 0.706 / 0.761 / 0.844; calibrated soft AND 0.731 / 0.762 / 0.847.
+
+**Round 4, Kaggle T4 x2** (training-free; three models; fixed in advance):
+- Competitive MaxSim, τ 0.1: worse than grouping on all three models.
+- τ sensitivity, LateOn only: 0.03 worse, 0.3 close to grouping.
+- Lead-in control and separate-encoding ablation: see Results.
+- Localization: see Results.
+- Latency, 100 candidates: about 28–31 ms per query on a T4.
+
+Full tables are in `results/ROUND4.md`.
 
 MultiConIR's "T2 Positive > HN1" uses the same document pairs as "T1 with 10 conditions", so it is reported once.
 
