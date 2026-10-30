@@ -12,9 +12,6 @@ How it scores
     `conditions=[...]`, e.g. from an LLM planner). A query with one condition is scored exactly
     like the underlying ColBERT model, so simple queries never change.
   * "grouped": each condition's tokens are averaged, then conditions are averaged with equal weight.
-  * "competitive": as grouped, but document tokens are shared out among the conditions
-    (Competitive MaxSim). Kept to reproduce a negative result: it is worse than "grouped" on
-    MultiConIR for all three models tested. Do not use it.
 What it returns
   For every result and condition: the condition's score, its score relative to the condition
   matched against its own text (1.0 = as good a match as the condition itself), and the
@@ -30,7 +27,7 @@ import torch
 
 from .model import NyayaRetriever, PyLateBackbone, split_clauses
 
-METHODS = ("colbert", "grouped", "competitive")
+METHODS = ("colbert", "grouped")
 
 
 @dataclass
@@ -59,7 +56,7 @@ class Index:
 
 
 class Axon:
-    def __init__(self, model: str = "lightonai/LateOn", method: str = "grouped", compete: float = 0.1,
+    def __init__(self, model: str = "lightonai/LateOn", method: str = "grouped",
                  device: str | None = None, query_length: int = 128, batch_size: int = 32, fp16: bool = True):
         if method not in METHODS:
             raise ValueError(f"method must be one of {METHODS}")
@@ -73,8 +70,6 @@ class Axon:
         self._plain = NyayaRetriever(self.backbone, None, "token", "token", "chamfer", dim=dim).to(self.device).eval()
         self._by_method = {
             "grouped": NyayaRetriever(self.backbone, None, "clause_tokens", "token", "chamfer", dim=dim).to(self.device).eval(),
-            "competitive": NyayaRetriever(self.backbone, None, "clause_tokens", "token", "chamfer", dim=dim,
-                                          compete=compete).to(self.device).eval(),
         }
 
     # ------------------------------------------------------------------ helpers

@@ -73,7 +73,7 @@ for r in ax.rerank("Find a jacket that: 1. is waterproof, 2. is lightweight, 3. 
   - its score relative to the condition matched against its own text
   - the document passages it matched, taken from ColBERT's own token alignments
   - `weakest`, naming the condition the document satisfies least
-- **Methods.** `method="grouped"` is the default. `"colbert"` is the baseline. `"competitive"` (Competitive MaxSim) is kept only to reproduce its negative result; do not use it.
+- **Methods.** `method="grouped"` is the default; `"colbert"` is the baseline. Competitive MaxSim is not offered, because it lost in round 4. Its scoring code stays in `nyaya/scoring.py` so that result can be reproduced.
 - **How far to trust the certificate.**
   - When a document can be compared with one known to satisfy every condition, the condition whose score dropped most is the broken one 54–82% of the time (chance 10%).
   - From a single document alone, the `weakest` flag is right only 24–38% of the time, about as often as simple word overlap (26%). Treat it as a hint, not a verdict.
