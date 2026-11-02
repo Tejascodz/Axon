@@ -12,6 +12,9 @@
 Protection
   * AXON_API_KEY: when set, every request except /health must send `Authorization: Bearer <key>`
     (compared in constant time).
+  * AXON_TENANT_KEYS="tenantA:keyA,tenantB:keyB": one key per tenant of a multi-tenant index
+    (built with `--tenants`). The key decides the tenant; /ask only ever retrieves that tenant's
+    documents, and the filter is applied inside retrieval, not in the prompt.
   * AXON_RATE_PER_MIN: requests per minute per client address (default 120; 0 disables; /metrics exempt).
   * Request sizes are capped (AXON_MAX_DOCS, AXON_MAX_CHARS) so one request cannot exhaust memory.
   * Binds to localhost by default; put it behind TLS before exposing it.
@@ -81,17 +84,33 @@ def _allowed(client: str) -> bool:
         return True
 
 
+def _tenant_keys():
+    raw = os.environ.get("AXON_TENANT_KEYS", "")
+    pairs = [p.split(":", 1) for p in raw.split(",") if ":" in p]
+    return [(t.strip(), k.strip()) for t, k in pairs if t.strip() and len(k.strip()) >= 16]   # short keys are ignored
+
+
 @app.middleware("http")
 async def guard(request: Request, call_next):
     path = request.url.path
     t0 = time.perf_counter()
+    request.state.tenant = None
     if path != "/health":
+        got = request.headers.get("authorization", "").encode()
+        tenant_keys = _tenant_keys()
         key = os.environ.get("AXON_API_KEY")
-        if key:
-            got = request.headers.get("authorization", "")
-            if not hmac.compare_digest(got.encode(), f"Bearer {key}".encode()):
+        if tenant_keys:
+            match = None
+            for tenant, k in tenant_keys:                  # check every key: timing reveals nothing
+                if hmac.compare_digest(got, f"Bearer {k}".encode()):
+                    match = tenant
+            if match is None:
                 REQS.inc(path=path, status="401")
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            request.state.tenant = match
+        elif key and not hmac.compare_digest(got, f"Bearer {key}".encode()):
+            REQS.inc(path=path, status="401")
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
         if path != "/metrics" and not _allowed(request.client.host if request.client else "unknown"):
             REQS.inc(path=path, status="429")
             return JSONResponse({"detail": "rate limit exceeded"}, status_code=429)
@@ -142,11 +161,13 @@ def rerank(req: RerankRequest):
 
 
 @app.post("/ask")
-def ask(req: AskRequest):
+def ask(req: AskRequest, request: Request):
     try:
-        return pipeline().answer(req.question, k=req.k)
+        return pipeline().answer(req.question, k=req.k, tenant=request.state.tenant)
     except HTTPException:
         raise
+    except PermissionError:
+        raise HTTPException(403, "this index is multi-tenant: use a tenant key")
     except Exception as e:                       # generator unreachable, etc.: no internals in the reply
         REQS.inc(path="/ask", status="502")
         raise HTTPException(502, f"generation failed: {type(e).__name__}")

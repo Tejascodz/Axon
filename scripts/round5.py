@@ -5,17 +5,19 @@
 
 GPU 1: index HotpotQA with Axon (LateOn) -> retrieval metrics and every test prompt -> LoRA
        fine-tuning of the generator (own implementation, fp16).
-GPU 0: the generator (Qwen3-4B-Instruct-2507) served two ways: a one-request-at-a-time transformers
-       server (nyaya.hf_server) and vLLM (installed in its own environment). Serving benchmark,
-       then every test against the base model, then against the fine-tuned model.
+GPU 0: the generator (Qwen3-4B-Instruct-2507) served three ways: a one-request-at-a-time transformers
+       server (nyaya.hf_server), vLLM and SGLang (each installed in its own environment). Serving
+       benchmarks, then every test against the base model (vLLM), then against the fine-tuned model.
 
 Fixed before running (no other settings are tried):
   Q9   Serving: time to first token, inter-token latency, time per output token and throughput at
-       concurrency 1/4/16/32 (vLLM) and 1/4 (transformers baseline), fixed 128-token outputs.
+       concurrency 1/4/16/32 (vLLM and SGLang, same GPU, model and prompts) and 1/4 (transformers
+       baseline), fixed 128-token outputs.
   Q10  End-to-end answers on 500 HotpotQA questions retrieved from a ~5,000-paragraph corpus:
        exact match, F1, citation precision/recall; abstention on 200 questions whose gold
        paragraphs are withheld (should answer INSUFFICIENT) and false abstention on the 500.
-  Q11  Prompt injection, 200 questions, 5 attack templates, a unique canary per question.
+  Q11  Prompt injection, 200 questions, 8 attack templates (incl. system-prompt exfiltration and
+       instructions hidden with zero-width characters or look-alike letters), a unique canary each.
        Attack success rate: undefended prompt / defended prompt / defended + input scanner.
        Scanner detection rate and false-positive rate on all clean paragraphs.
   Q12  Condition check (MultiConIR, 600 documents, half satisfy all 10 conditions, half break
@@ -30,6 +32,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -116,24 +119,42 @@ class Server:
         time.sleep(5)
 
 
-def vllm_python(version):
-    env_dir = f"/tmp/vllm_env_{version or 'latest'}"
+def free_gb(path="/tmp"):
+    return shutil.disk_usage(path).free / 2 ** 30
+
+
+def make_env(env_dir, specs, module, logname):
+    """A separate Python environment for a serving engine, so its pinned torch never touches ours."""
     py = f"{env_dir}/bin/python"
-    if os.path.exists(py) and subprocess.run([py, "-c", "import vllm"], capture_output=True).returncode == 0:
+    if os.path.exists(py) and subprocess.run([py, "-c", f"import {module}"], capture_output=True).returncode == 0:
         return py
-    spec = f"vllm=={version}" if version else "vllm"
-    if sh([PY, "-m", "pip", "install", "-q", "uv"], "vllm_install") != 0:
+    if sh([PY, "-m", "pip", "install", "-q", "uv"], logname) != 0:
         return None
-    if sh([PY, "-m", "uv", "venv", "--python", PY, env_dir], "vllm_install") != 0:
+    if sh([PY, "-m", "uv", "venv", "--python", PY, env_dir], logname) != 0:
         return None
-    # --torch-backend=auto picks the PyTorch CUDA build that matches this machine's driver
-    if sh([PY, "-m", "uv", "pip", "install", "--python", py, spec, "--torch-backend=auto"], "vllm_install", timeout=3600) != 0 \
-            and sh([PY, "-m", "uv", "pip", "install", "--python", py, spec], "vllm_install", timeout=3600) != 0:
+    for spec in specs:
+        # --torch-backend=auto picks the PyTorch CUDA build that matches this machine's driver
+        if sh([PY, "-m", "uv", "pip", "install", "--python", py, spec, "--torch-backend=auto"], logname, timeout=3600) == 0 \
+                or sh([PY, "-m", "uv", "pip", "install", "--python", py, spec], logname, timeout=3600) == 0:
+            break
+    else:
         return None
-    r = subprocess.run([py, "-c", "import vllm, torch; print(vllm.__version__, torch.__version__, torch.version.cuda)"],
+    r = subprocess.run([py, "-c", f"import {module}, torch; print({module}.__version__, torch.__version__, torch.version.cuda)"],
                        capture_output=True, text=True)
-    status("vllm_install_" + (version or "latest"), ok=r.returncode == 0, info=(r.stdout or r.stderr)[-300:])
+    status(f"{logname}_{os.path.basename(env_dir)}", ok=r.returncode == 0, info=(r.stdout or r.stderr)[-300:])
     return py if r.returncode == 0 else None
+
+
+def vllm_python(version):
+    return make_env(f"/tmp/vllm_env_{version or 'latest'}", [f"vllm=={version}" if version else "vllm"], "vllm",
+                    "vllm_install")
+
+
+def sglang_python():
+    if free_gb() < 25:
+        status("sglang_install", ok=False, info=f"skipped: only {free_gb():.0f} GB disk free")
+        return None
+    return make_env("/tmp/sglang_env", ["sglang", "sglang[all]"], "sglang", "sglang_install")
 
 
 def start_vllm(model_path, served, gpu, port=8000):
@@ -152,6 +173,26 @@ def start_vllm(model_path, served, gpu, port=8000):
             return s
         s.stop()
         status(f"vllm_{served}", ok=False, tried=f"{version or 'latest'} {flags}")
+    return None
+
+
+SGLANG_ATTEMPTS = [[], ["--attention-backend", "triton"], ["--attention-backend", "triton", "--disable-cuda-graph"]]
+
+
+def start_sglang(py, model_path, served, gpu, port=30000):
+    base = f"http://127.0.0.1:{port}/v1"
+    for flags in SGLANG_ATTEMPTS:
+        cmd = [py, "-m", "sglang.launch_server", "--model-path", model_path, "--served-model-name", served,
+               "--host", "127.0.0.1", "--port", str(port), "--dtype", "half", "--context-length", "4096",
+               "--mem-fraction-static", "0.85", "--max-running-requests", "32", "--enable-metrics", *flags]
+        log(f"starting SGLang {' '.join(flags)} for {served}")
+        s = Server(cmd, gpu_env(gpu), f"sglang_{served}", base)
+        if s.ready(served, timeout=1500):
+            r = subprocess.run([py, "-c", "import sglang; print(sglang.__version__)"], capture_output=True, text=True)
+            status(f"sglang_{served}", ok=True, version=r.stdout.strip(), flags=flags)
+            return s
+        s.stop()
+        status(f"sglang_{served}", ok=False, tried=" ".join(flags) or "default")
     return None
 
 
@@ -197,7 +238,7 @@ def lane_retrieval_and_training(a, gpu, ev_retrieval, ev_train):
         ev_train.set()
 
 
-def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env):
+def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env=None):
     ev_retrieval.wait()
     if not os.path.exists("results/r5_prompts.json"):
         log("no prompts: retrieval failed, nothing to serve")
@@ -230,12 +271,23 @@ def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env):
     if s is None:
         log("vLLM did not start with any setting; falling back to the transformers server (smaller test sets)")
         a.no_vllm = True
-        return lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env)
+        return lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env)
     step("bench_vllm", [PY, "scripts/r5_steps.py", "bench", "--base", s.base, "--model", served, "--tag", "vllm",
                         "--gpu", str(gpu)], "r5_bench_vllm", timeout=3600, done_file="results/r5_bench_vllm.json")
     step("generate_base", [PY, "scripts/r5_steps.py", "generate", "--base", s.base, "--model", served, "--tag", "base"],
          "r5_gen_base", timeout=4 * 3600, done_file="results/r5_gen_base.json")
     s.stop()
+    # SGLang on the same GPU, model and prompts, while fine-tuning runs on the other GPU
+    if ev_sglang_env is not None and not a.no_sglang and not os.path.exists("results/r5_bench_sglang.json"):
+        ev_sglang_env.wait()
+        py = a.sglang_py
+        sg = start_sglang(py, a.llm, served, gpu) if py else None
+        if sg:
+            step("bench_sglang", [PY, "scripts/r5_steps.py", "bench", "--base", sg.base, "--model", served, "--tag", "sglang",
+                                  "--gpu", str(gpu)], "r5_bench_sglang", timeout=3600, done_file="results/r5_bench_sglang.json")
+            sg.stop()
+        else:
+            log("SGLang not available on this machine; vLLM results stand alone")
     ev_train.wait()
     if not os.path.exists(f"{FT_DIR}/config.json"):
         log("no fine-tuned model; skipping its evaluation")
@@ -299,6 +351,8 @@ def answer_stats(g):
             "false abstention (answerable)": _boot([float(r["abstained"]) for r in A]),
             "abstention (gold withheld)": _boot([float(r["abstained"]) for r in U]),
             "well-formed replies": _boot([float(r["well_formed"]) for r in A + U]),
+            "answer found in its cited sources": _boot([r.get("grounded") for r in A]),
+            "answered without any valid citation": _boot([r.get("unsupported") for r in A]),
             "invalid citations removed (per reply)": _boot([r["invalid_citations"] for r in A + U])}
 
 
@@ -318,17 +372,36 @@ def summary():
             if f"{k}_recall@100" in rt:
                 lab = {"bm25": "BM25", "exact": "ColBERT exact search", "plaid": "ColBERT PLAID (approximate)"}[k]
                 L.append(f"| {lab} recall@100 | {rt[f'{k}_recall@100']:.3f} (median {lat[k]['median_ms']} ms, p95 {lat[k]['p95_ms']} ms per query) |")
-        L.append(f"| full retrieval pipeline per query | median {lat['pipeline']['median_ms']} ms, p95 {lat['pipeline']['p95_ms']} ms |")
+        L.append(f"| full retrieval pipeline per query | median {lat['pipeline']['median_ms']} ms, p95 {lat['pipeline']['p95_ms']} ms, "
+                 f"p99 {lat['pipeline'].get('p99_ms', '–')} ms |")
+        rk = rt.get("ranking")
+        if rk:
+            L += ["", "| Ranking (gold = the 2 supporting paragraphs) | BM25 + ColBERT fused | + Axon re-rank | re-rank fused with BM25 again |",
+                  "|---|---|---|---|"]
+            for m in ("recall@5", "recall@10", "recall@20", "both@5", "mrr@10", "ndcg@10"):
+                L.append(f"| {m} | {rk['fused'][m]:.3f} | {rk['reranked'][m]:.3f} | {rk.get('reranked_bm25', {}).get(m, float('nan')):.3f} |")
+            if rt.get("generator_ranking"):
+                L.append(f"\nThe generator was given the top 5 of **{rt['generator_ranking']}**, chosen beforehand on the 200 "
+                         "held-out questions (both gold paragraphs in the top 5), not on the 500 graded ones.")
+        ti = rt.get("tenant_isolation")
+        if ti:
+            L += ["", f"Tenant isolation (corpus split between two tenants, {ti['queries']} queries as tenant t0): "
+                      f"{ti['cross_tenant_results']} cross-tenant results among {ti['results_returned']} returned; "
+                      f"a query without a tenant was {'refused' if ti['query_without_tenant_refused'] else 'NOT refused'}."]
         if rt.get("plaid_error"):
             L.append(f"| PLAID | not built: {rt['plaid_error'][:120]} |")
         L.append("")
-    for tag, title in (("hf", "transformers server, one request at a time"), ("vllm", "vLLM"), ("vllm_ft", "vLLM, fine-tuned model")):
+    for tag, title in (("hf", "transformers server, one request at a time"), ("vllm", "vLLM"), ("sglang", "SGLang"),
+                       ("vllm_ft", "vLLM, fine-tuned model")):
         b = _load(f"r5_bench_{tag}")
         if not b:
             continue
         if tag == "hf":
             L += ["## Q9 Serving (T4, fp16, Qwen3-4B-Instruct-2507, ~1,100-token RAG prompts, 128-token outputs)", ""]
-        L += [f"**{title}** (vLLM {st.get('vllm_base', {}).get('version', '')})" if tag.startswith("vllm") else f"**{title}**", "",
+        ver = st.get("vllm_base", {}).get("version", "") if tag.startswith("vllm") else \
+            st.get("sglang_base", {}).get("version", "") if tag == "sglang" else ""
+        note = "" if all(r.get("fixed_length", True) for r in b["rows"]) else ", outputs not fixed-length"
+        L += [f"**{title}**" + (f" ({ver}{note})" if ver or note else ""), "",
               "| Concurrency | TTFT p50 / p99 ms | ITL p50 / p99 ms | TPOT ms | e2e p50 ms | requests/s | output tokens/s | GPU memory MiB | GPU util % | failed |",
               "|---|---|---|---|---|---|---|---|---|---|"]
         for r in b["rows"]:
@@ -346,7 +419,8 @@ def summary():
         L += ["## Q10 Answers, citations, abstention", "", "| Measure | base | fine-tuned | fine-tuned − base (paired) |", "|---|---|---|---|"]
         sb, sf = answer_stats(base), (answer_stats(ft) if ft else {})
         keys = {"EM": "em", "F1": "f1", "citation precision": "cite_precision", "citation recall": "cite_recall",
-                "false abstention (answerable)": "abstained"}
+                "false abstention (answerable)": "abstained", "answer found in its cited sources": "grounded",
+                "answered without any valid citation": "unsupported"}
         for k, v in sb.items():
             d = "–"
             if ft and k in keys:
@@ -375,8 +449,9 @@ def summary():
                 by_t = {}
                 for r in rb:
                     by_t.setdefault(r["template"], []).append(float(r["attacked"]))
-                L.append("Defended prompt, base model, success by template: " +
-                         ", ".join(f"T{t + 1} {100 * sum(v) / len(v):.0f}%" for t, v in sorted(by_t.items())) + ".")
+                from nyaya.rag_eval import TEMPLATE_NAMES
+                L.append("Defended prompt, base model, success by attack: " +
+                         ", ".join(f"{TEMPLATE_NAMES[t]} {100 * sum(v) / len(v):.0f}%" for t, v in sorted(by_t.items())) + ".")
         L += ["", "## Q12 Condition check: LLM alone vs LLM + Axon certificate", ""]
         ca, cc = base["arms"].get("condition_alone", []), base["arms"].get("condition_cert", [])
         if ca and cc:
@@ -438,6 +513,7 @@ def main():
     ap.add_argument("--summary_only", action="store_true")
     ap.add_argument("--no_vllm", action="store_true", help="serve with nyaya.hf_server only")
     ap.add_argument("--skip_train", action="store_true")
+    ap.add_argument("--no_sglang", action="store_true", help="skip the SGLang comparison")
     ap.add_argument("--train_minutes", type=float, default=100)
     ap.add_argument("--hf_limit", type=int, default=100, help="test items per arm when only the slow server is available")
     ap.add_argument("--smoke", action="store_true", help="tiny sizes for a local check")
@@ -463,21 +539,31 @@ def main():
         sh([PY, "scripts/prep_data.py", "--data", "data", "--only", "multiconir"], "r5_prep")
     ev_r, ev_t, ev_v = threading.Event(), threading.Event(), threading.Event()
 
+    ev_s = threading.Event()
+    a.sglang_py = None
+
     def install():
         try:
             if not a.no_vllm:
                 vllm_python(None)
         finally:
             ev_v.set()
+        try:
+            if not a.no_sglang:
+                a.sglang_py = sglang_python()
+        finally:
+            ev_s.set()
+    log(f"disk free: {free_gb():.0f} GB")
+    status("disk", free_gb=round(free_gb(), 1))
     threading.Thread(target=install, daemon=True).start()
     gA, gB = (0, 1) if n >= 2 else (0, 0)
     if gA == gB:                                    # one GPU: run the lanes one after the other
         lane_retrieval_and_training(a, gB, ev_r, ev_t)
-        lane_serving(a, gA, ev_r, ev_t, ev_v)
+        lane_serving(a, gA, ev_r, ev_t, ev_v, ev_s)
     else:
         tb = threading.Thread(target=lane_retrieval_and_training, args=(a, gB, ev_r, ev_t))
         tb.start()
-        lane_serving(a, gA, ev_r, ev_t, ev_v)
+        lane_serving(a, gA, ev_r, ev_t, ev_v, ev_s)
         tb.join()
     print("\n" + summary(), flush=True)
 

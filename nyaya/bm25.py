@@ -45,8 +45,14 @@ class BM25:
             s[ids] += self.idf[t] * tf * (self.k1 + 1) / (tf + norm)
         return s
 
-    def search(self, q: str, k: int = 100) -> list[int]:
+    def search(self, q: str, k: int = 100, allowed=None) -> list[int]:
+        """Top-k document positions; `allowed` (bool array) restricts the search to those documents."""
         s = self.scores(q)
+        if allowed is not None:
+            s[~allowed] = -np.inf
+            k = min(k, int(allowed.sum()))
         k = min(k, self.N)
+        if k <= 0:
+            return []
         top = np.argpartition(-s, k - 1)[:k]
-        return top[np.argsort(-s[top])].tolist()
+        return [i for i in top[np.argsort(-s[top])].tolist() if np.isfinite(s[i])]

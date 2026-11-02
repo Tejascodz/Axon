@@ -138,13 +138,20 @@ class Axon:
         return Q[0][Qm[0]].float().cpu().numpy()
 
     @torch.no_grad()
-    def search(self, query: str, index: Index, k: int = 100, chunk: int = 4096) -> list[int]:
-        """Exact late-interaction search over a whole index (plain ColBERT scoring)."""
+    def search(self, query: str, index: Index, k: int = 100, chunk: int = 4096, allowed=None) -> list[int]:
+        """Exact late-interaction search over a whole index (plain ColBERT scoring). `allowed` (bool
+        array over the index) restricts the search to those documents: the others are never returned."""
         with self._ctx():
             q = self._plain.encode([query], "q")
             s = torch.cat([self._plain.score(q, (index.D[i:i + chunk], index.M[i:i + chunk], None, None))[0].float()
                            for i in range(0, index.D.shape[0], chunk)])
-        return s.topk(min(k, s.shape[0])).indices.tolist()
+        if allowed is not None:
+            s[~torch.as_tensor(allowed, device=s.device)] = float("-inf")
+            k = min(k, int(allowed.sum()))
+        if k <= 0:
+            return []
+        top = s.topk(min(k, s.shape[0]))
+        return [i for i, v in zip(top.indices.tolist(), top.values.tolist()) if v != float("-inf")]
 
     @torch.no_grad()
     def rerank(self, query: str, documents, top_k: int | None = None, conditions: list[str] | None = None,

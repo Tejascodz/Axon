@@ -62,10 +62,32 @@ def load_retriever(path: str, device: str | None = None) -> NyayaRetriever:
 # --------------------------------------------------------------------------- ingestion
 
 
-def read_file(path: str) -> str:
+MAX_FILE_MB = float(os.environ.get("AXON_MAX_FILE_MB", "50"))
+MAX_PDF_PAGES = int(os.environ.get("AXON_MAX_PDF_PAGES", "500"))
+
+
+def check_file(path: str) -> str | None:
+    """Why a file must not be ingested (None = fine): links, oversized files, and PDFs whose content
+    is not a PDF (the extension is not trusted; the file signature is checked)."""
+    if os.path.islink(path):
+        return "symbolic link"
+    size = os.path.getsize(path)
+    if size > MAX_FILE_MB * 2 ** 20:
+        return f"larger than {MAX_FILE_MB:g} MB"
+    if path.lower().endswith(".pdf"):
+        with open(path, "rb") as f:
+            if f.read(5) != b"%PDF-":
+                return "not a PDF (wrong file signature)"
+    return None
+
+
+def read_file(path: str, max_pages: int = MAX_PDF_PAGES) -> str:
     if path.lower().endswith(".pdf"):
         from pypdf import PdfReader  # optional dependency
-        return "\n\n".join((p.extract_text() or "") for p in PdfReader(path).pages)
+        pages = PdfReader(path).pages
+        if len(pages) > max_pages:
+            raise ValueError(f"more than {max_pages} pages")
+        return "\n\n".join((p.extract_text() or "") for p in pages)
     return open(path, encoding="utf-8", errors="ignore").read()
 
 
@@ -151,17 +173,36 @@ RAG_STAGE = REGISTRY.histogram("rag_stage_seconds", "Time per pipeline stage", [
 RAG_EVENTS = REGISTRY.counter("rag_events_total", "Guardrail and outcome events", ["event"])
 
 
-def build_axon(src_or_chunks, out: str, model: str = "lightonai/LateOn", plaid: bool = False, axon=None):
-    """Index a folder (or a list of {"source", "text"} dicts) with Axon's ColBERT model."""
+def build_axon(src_or_chunks, out: str, model: str = "lightonai/LateOn", plaid: bool = False, axon=None,
+               tenants_from_dirs: bool = False):
+    """Index a folder (or a list of {"source", "text"[, "tenant"]} dicts) with Axon's ColBERT model.
+    With `tenants_from_dirs`, each top-level folder is a tenant: its documents are only ever
+    retrieved for that tenant."""
     from .axon import Axon
+    skipped = []
     if isinstance(src_or_chunks, str):
         chunks = []
-        for root, _, files in os.walk(src_or_chunks):
+        for root, dirs, files in os.walk(src_or_chunks):
+            dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]   # never leave src
             for f in sorted(files):
                 p = os.path.join(root, f)
-                if f.lower().endswith((".txt", ".md", ".pdf")) and not os.path.islink(p):
-                    for i, c in enumerate(chunk(read_file(p))):
-                        chunks.append({"source": os.path.relpath(p, src_or_chunks), "part": i, "text": c})
+                if not f.lower().endswith((".txt", ".md", ".pdf")):
+                    continue
+                rel = os.path.relpath(p, src_or_chunks)
+                why = check_file(p)
+                if why is None:
+                    try:
+                        text = read_file(p)
+                    except Exception as e:                             # a broken file must not stop the build
+                        why = f"unreadable: {type(e).__name__}: {str(e)[:80]}"
+                if why:
+                    skipped.append({"source": rel, "reason": why})
+                    continue
+                for i, c in enumerate(chunk(text)):
+                    rec = {"source": rel, "part": i, "text": c}
+                    if tenants_from_dirs:
+                        rec["tenant"] = rel.split(os.sep)[0] if os.sep in rel else "_root"
+                    chunks.append(rec)
     else:
         chunks = [dict(c) for c in src_or_chunks]
     for n, c in enumerate(chunks):
@@ -173,7 +214,8 @@ def build_axon(src_or_chunks, out: str, model: str = "lightonai/LateOn", plaid: 
     with open(f"{out}/chunks.jsonl", "w") as f:
         for c in chunks:
             f.write(json.dumps(c) + "\n")
-    cfg = {"model": model, "plaid": False, "n": len(chunks)}
+    cfg = {"model": model, "plaid": False, "n": len(chunks), "skipped": skipped,
+           "multi_tenant": any("tenant" in c for c in chunks)}
     if plaid:
         from pylate import indexes
         emb = [idx.D[i][idx.M[i]].float().cpu().numpy() for i in range(len(chunks))]
@@ -200,25 +242,49 @@ class AxonRAG:
             from pylate import indexes
             self.plaid = indexes.PLAID(index_folder=index_dir, index_name="plaid", override=False, show_progress=False)
         self._pos = {c["id"]: n for n, c in enumerate(self.chunks)}
+        self._masks = {}
 
-    def first_stage(self, q: str, depth: int = 100, approximate: bool | None = None) -> list[int]:
+    @property
+    def multi_tenant(self) -> bool:
+        return any("tenant" in c for c in self.chunks)
+
+    def tenant_mask(self, tenant):
+        """Which chunks a tenant may see. In a multi-tenant index a tenant is required: there is no
+        "see everything" default."""
+        if tenant is None:
+            if self.multi_tenant:
+                raise PermissionError("this index is multi-tenant: a tenant is required")
+            return None
+        if tenant not in self._masks:
+            import numpy as np
+            self._masks[tenant] = np.array([c.get("tenant") == tenant for c in self.chunks], dtype=bool)
+        return self._masks[tenant]
+
+    def first_stage(self, q: str, depth: int = 100, approximate: bool | None = None, allowed=None) -> list[int]:
         use_plaid = self.plaid is not None if approximate is None else approximate
         if use_plaid:
-            res = self.plaid(self.ax.query_vectors(q)[None], k=depth)[0]
+            sub = None if allowed is None else [c["id"] for c, ok in zip(self.chunks, allowed) if ok]
+            res = self.plaid(self.ax.query_vectors(q)[None], k=depth, subset=sub)[0] if sub != [] else []
             if res:
                 return [self._pos[r["id"]] for r in res]
             RAG_EVENTS.inc(event="plaid_empty_fallback_exact")          # never return nothing silently
-        return self.ax.search(q, self.index, k=depth)
+        return self.ax.search(q, self.index, k=depth, allowed=allowed)
 
     def retrieve(self, q: str, k: int = 5, depth: int = 100, rrf_k: int = 60, conditions=None,
-                 method: str | None = None, approximate: bool | None = None, rerank: bool = True) -> list[dict]:
+                 method: str | None = None, approximate: bool | None = None, rerank: bool = True,
+                 tenant: str | None = None) -> list[dict]:
+        """Tenant filtering happens inside both searches, before fusion and re-ranking, and every
+        result is checked again before it is returned."""
+        allowed = self.tenant_mask(tenant)
         t0 = time.perf_counter()
         fused = defaultdict(float)
-        for ranked in (self.bm25.search(q, depth), self.first_stage(q, depth, approximate)):
+        for ranked in (self.bm25.search(q, depth, allowed=allowed), self.first_stage(q, depth, approximate, allowed)):
             for r, i in enumerate(ranked, 1):
                 fused[i] += 1.0 / (rrf_k + r)
-        cand = sorted(fused, key=fused.get, reverse=True)[:depth]
+        cand = [i for i in sorted(fused, key=fused.get, reverse=True)[:depth] if allowed is None or allowed[i]]
         t1 = time.perf_counter()
+        if not cand:
+            return []
         if not rerank:                                                  # ablation: fused first stage only
             return [{**self.chunks[i], "score": fused[i], "weakest": None, "conditions": []} for i in cand[:k]]
         results = self.ax.rerank(q, self.ax.subset(self.index, cand), top_k=k, conditions=conditions, method=method)
@@ -227,14 +293,17 @@ class AxonRAG:
         RAG_STAGE.observe(t2 - t1, stage="rerank")
         hits = []
         for r in results:
+            if allowed is not None and not allowed[cand[r.index]]:              # defence in depth
+                RAG_EVENTS.inc(event="tenant_filter_violation_blocked")
+                continue
             c = self.chunks[cand[r.index]]
             hits.append({**c, "score": r.score, "weakest": r.weakest,
                          "conditions": [(m.condition, m.relative, [e[2] for e in m.evidence]) for m in r.conditions]})
         return hits
 
     def answer(self, q: str, k: int = 5, scan: bool = True, certificate: bool = True, max_tokens: int = 256,
-               **llm_kw) -> dict:
-        hits = self.retrieve(q, k=k)
+               tenant: str | None = None, **llm_kw) -> dict:
+        hits = self.retrieve(q, k=k, tenant=tenant)
         sources = [{"id": h["id"], "title": h.get("source", ""), "text": h["text"]} for h in hits]
         withheld = []
         if scan:
@@ -273,19 +342,23 @@ def main():
     b.add_argument("--model", default="lightonai/LateOn", help="released ColBERT model (Axon)")
     b.add_argument("--ckpt", default=None, help="legacy: a checkpoint trained with nyaya.train")
     b.add_argument("--plaid", action="store_true", help="also build a PLAID index for large collections")
+    b.add_argument("--tenants", action="store_true", help="each top-level folder of --src is a separate tenant")
     a = sub.add_parser("ask")
     a.add_argument("question")
     a.add_argument("--index", required=True)
     a.add_argument("--ckpt", default=None)
     a.add_argument("--k", type=int, default=5)
     a.add_argument("--no_llm", action="store_true", help="only print retrieved chunks")
+    a.add_argument("--tenant", default=None, help="required for a multi-tenant index")
     args = ap.parse_args()
     if args.cmd == "build":
         if args.ckpt:
             build(args.src, args.ckpt, args.out)
         else:
-            _, _, ch = build_axon(args.src, args.out, args.model, plaid=args.plaid)
+            _, _, ch = build_axon(args.src, args.out, args.model, plaid=args.plaid, tenants_from_dirs=args.tenants)
             print(f"indexed {len(ch)} chunks from {args.src}")
+            for sk in json.load(open(f"{args.out}/config.json"))["skipped"]:
+                print(f"  skipped {sk['source']}: {sk['reason']}")
         return
     if args.ckpt:
         hs = HybridSearch(args.index, load_retriever(args.ckpt))
@@ -297,12 +370,12 @@ def main():
         return
     rag = AxonRAG(args.index)
     if args.no_llm:
-        for h in rag.retrieve(args.question, k=args.k):
+        for h in rag.retrieve(args.question, k=args.k, tenant=args.tenant):
             print(f"[{h['id']}] {h.get('source', '')}: {h['text'][:160]}...")
             for c, rel, ev in h["conditions"]:
                 print(f"     {c}: {rel:.2f} {ev[:2]}")
         return
-    out = rag.answer(args.question, k=args.k)
+    out = rag.answer(args.question, k=args.k, tenant=args.tenant)
     print(out["text"] or out["answer"])
     for s in out["sources"]:
         print(f"  [{s['id']}] {s.get('source', '')}")

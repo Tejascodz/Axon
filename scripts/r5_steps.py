@@ -20,6 +20,18 @@ from nyaya import guards, rag_eval  # noqa: E402
 R = "results"
 
 
+def rank_metrics(ranked, gold):
+    """Recall@k (share of the gold paragraphs found), both-gold@5, MRR@10, nDCG@10 (binary relevance)."""
+    import math
+    out = {f"recall@{k}": len(gold & set(ranked[:k])) / len(gold) for k in (5, 10, 20)}
+    out["both@5"] = float(gold <= set(ranked[:5]))
+    first = next((r for r, i in enumerate(ranked[:10], 1) if i in gold), None)
+    out["mrr@10"] = 1.0 / first if first else 0.0
+    dcg = sum(1 / math.log2(r + 1) for r, i in enumerate(ranked[:10], 1) if i in gold)
+    out["ndcg@10"] = dcg / sum(1 / math.log2(r + 1) for r in range(1, min(len(gold), 10) + 1))
+    return out
+
+
 def _dump(obj, path):
     tmp = path + ".tmp"
     json.dump(obj, open(tmp, "w"))
@@ -63,20 +75,29 @@ def retrieve(a):
             lat[name].append(time.perf_counter() - t)
             rec[f"{name}_r100"] = len(gold & set(ranked)) / 2
         t = time.perf_counter()
-        hits = rag.retrieve(it["question"], k=20, depth=100, approximate=False)
+        hits = rag.retrieve(it["question"], k=100, depth=100, approximate=False)
         sync()
         lat["pipeline"].append(time.perf_counter() - t)
-        ranked = [int(h["id"][1:]) for h in hits]
-        rec["ranked"] = ranked
+        axon100 = [int(h["id"][1:]) for h in hits]
+        ranked = axon100[:20]
         rec["r5_both"] = float(gold <= set(ranked[:5]))
         rec["r5_any"] = float(bool(gold & set(ranked[:5])))
-        fused = [int(h["id"][1:]) for h in rag.retrieve(it["question"], k=5, depth=100, approximate=False, rerank=False)]
-        rec["r5_both_fused"] = float(gold <= set(fused))
+        fused = [int(h["id"][1:]) for h in rag.retrieve(it["question"], k=20, depth=100, approximate=False, rerank=False)]
+        rec["r5_both_fused"] = float(gold <= set(fused[:5]))
+        # BM25 fused again with the re-ranker's order (keeps the keyword signal the re-ranker drops)
+        sc = {}
+        for lst in (rag.bm25.search(it["question"], 100), axon100):
+            for r, i in enumerate(lst, 1):
+                sc[i] = sc.get(i, 0.0) + 1.0 / (60 + r)
+        hybrid = sorted(sc, key=sc.get, reverse=True)[:20]
+        rec["lists"] = {"fused": fused, "reranked": ranked, "reranked_bm25": hybrid}
+        rec["metrics"] = {k: rank_metrics(v, gold) for k, v in rec["lists"].items()}
         per_q.append(rec)
 
     def ms(x):
         x = sorted(x)
-        return {"median_ms": round(1000 * x[len(x) // 2], 2), "p95_ms": round(1000 * x[int(0.95 * (len(x) - 1))], 2)} if x else None
+        return {"median_ms": round(1000 * x[len(x) // 2], 2), "p95_ms": round(1000 * x[int(0.95 * (len(x) - 1))], 2),
+                "p99_ms": round(1000 * x[int(0.99 * (len(x) - 1))], 2)} if x else None
     summary = {"questions": len(items), "corpus_paragraphs": len(chunks), "index_seconds": round(index_s, 1),
                "plaid": bool(rag.plaid), "plaid_error": plaid_error,
                "recall@5_both_gold": sum(r["r5_both"] for r in per_q) / len(per_q),
@@ -84,7 +105,35 @@ def retrieve(a):
                "recall@5_both_gold_fused_only": sum(r["r5_both_fused"] for r in per_q) / len(per_q),
                **{f"{k}_recall@100": sum(r[f"{k}_r100"] for r in per_q) / len(per_q) for k in ("bm25", "exact", "plaid")
                   if f"{k}_r100" in per_q[0]},
-               "latency": {k: ms(v) for k, v in lat.items() if v}}
+               "latency": {k: ms(v) for k, v in lat.items() if v},
+               "ranking": {stage: {m: sum(r["metrics"][stage][m] for r in per_q) / len(per_q)
+                                   for m in per_q[0]["metrics"][stage]} for stage in ("fused", "reranked", "reranked_bm25")}}
+    # which ranking feeds the generator is chosen on the 200 held-out questions (never on the 500 graded ones)
+    held = [r for r in per_q if r["id"] in {it["id"] for it in U}] or per_q
+    choice = max(("fused", "reranked", "reranked_bm25"),
+                 key=lambda st: sum(r["metrics"][st]["both@5"] + 1e-3 * r["metrics"][st]["mrr@10"] for r in held))
+    summary["generator_ranking"] = choice
+    for r in per_q:
+        r["ranked"] = r["lists"][choice]
+    # tenant isolation on the real index: half the paragraphs belong to each of two tenants
+    import zlib
+    for c in rag.chunks:
+        c["tenant"] = f"t{zlib.crc32(c['source'].encode()) % 2}"
+    rag._masks.clear()
+    leaks, returned, refused = 0, 0, 0
+    for it in items[:200]:
+        hits_t = rag.retrieve(it["question"], k=10, depth=100, tenant="t0", approximate=bool(rag.plaid))
+        returned += len(hits_t)
+        leaks += sum(1 for h in hits_t if h.get("tenant") != "t0")
+    try:
+        rag.retrieve(items[0]["question"], k=5)
+    except PermissionError:
+        refused = 1
+    for c in rag.chunks:
+        c.pop("tenant", None)
+    rag._masks.clear()
+    summary["tenant_isolation"] = {"queries": min(200, len(items)), "results_returned": returned,
+                                   "cross_tenant_results": leaks, "query_without_tenant_refused": bool(refused)}
     by_id = {r["id"]: r for r in per_q}
 
     prompts = {"answer": [], "unanswerable": [], "injection": [], "condition": [], "condition_calib": []}

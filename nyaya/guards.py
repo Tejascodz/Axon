@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import html
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 INSUFFICIENT = "INSUFFICIENT"
@@ -45,8 +46,24 @@ matched is quoted). Use it as a hint, and verify it against the source text your
 {table}"""
 
 
+# letters from other scripts that look like Latin ones, used to slip instructions past filters
+_HOMOGLYPHS = str.maketrans("аеорсухіјѕԁԛһАВЕКМНОРСТХІЈЅοαεινρτυκΟΑΕΙΝΡΤΥΚΜ",
+                            "aeopcyxijsdqhABEKMHOPCTXIJSoaeivptukOAEINPTYKM")
+
+
+def strip_invisible(t: str) -> str:
+    """Remove zero-width and other invisible formatting characters (Unicode category Cf)."""
+    return "".join(ch for ch in t if unicodedata.category(ch) != "Cf")
+
+
+def normalize_text(t: str) -> str:
+    """What a scanner should look at: compatibility forms folded, invisible characters removed,
+    look-alike letters mapped to Latin."""
+    return strip_invisible(unicodedata.normalize("NFKC", t)).translate(_HOMOGLYPHS)
+
+
 def _escape(t: str) -> str:
-    return html.escape(t, quote=False)
+    return html.escape(strip_invisible(t), quote=False)
 
 
 def format_certificate(certificate: dict) -> str:
@@ -91,11 +108,14 @@ _INJECTION = [re.compile(p, re.I) for p in (
     r"<\|[a-z_]+\|>",
     r"\b(as\s+an\s+ai|language\s+model)\b[^.\n]{0,30}\b(you|must|should)\b",
     r"\b(reveal|repeat|print|show)\b[^.\n]{0,25}\b(system\s+prompt|your\s+instructions|hidden\s+prompt)\b",
+    r"\b(reveal|repeat|print|share|send|include|output|list|leak)\b[^.\n]{0,40}\b(api[\s_-]?keys?|passwords?|credentials|access\s+tokens?|secret\s+keys?)\b",
 )]
 
 
 def scan_source(text: str) -> list[str]:
-    """Matched fragments that look like instructions aimed at the model (empty = clean)."""
+    """Matched fragments that look like instructions aimed at the model (empty = clean). The text is
+    normalised first, so invisible characters and look-alike letters do not hide an instruction."""
+    text = normalize_text(text)
     hits = []
     for p in _INJECTION:
         m = p.search(text)

@@ -86,16 +86,18 @@ Every stage is written in this repository; the only outside pieces are the ColBE
 
 | Stage | What it does | Where |
 |---|---|---|
-| Chunking | Paragraph-first, 220-word chunks with a 40-word overlap; .txt, .md and .pdf files; symbolic links are not followed | `nyaya/rag.py` |
+| Ingestion | .txt, .md and .pdf files. Size and page limits are enforced, a PDF must carry a real PDF signature, symbolic links are not followed, and unreadable files are skipped and reported | `nyaya/rag.py`, `check_file` |
+| Chunking | Paragraph-first, 220-word chunks with a 40-word overlap | `nyaya/rag.py` |
 | Indexing | ColBERT token vectors for every chunk (no pickle; tensors only), BM25, and an optional PLAID index for approximate search over large collections | `nyaya/rag.py`, `build_axon` |
 | Retrieval | BM25 and ColBERT search fused with reciprocal-rank fusion, then Axon re-ranking with per-condition evidence | `AxonRAG.retrieve` |
-| Guardrails, input | Retrieved text is escaped and marked as data, never instructions. A scanner withholds passages that look like instructions aimed at the model (prompt injection) | `nyaya/guards.py` |
-| Generation | Any OpenAI-compatible server: vLLM, SGLang, a hosted API, or `nyaya.hf_server` (one request at a time, the baseline). Answers stream; each must cite its sources or reply INSUFFICIENT. For multi-condition questions, Axon's evidence certificate is passed to the model | `nyaya/llm.py`, `AxonRAG.answer` |
+| Tenant isolation | In a multi-tenant index (one folder per tenant), the tenant filter is applied inside both searches, before fusion and re-ranking, and checked again on every result. A query without a tenant is refused. On the server, each tenant has its own API key | `AxonRAG.tenant_mask`, `nyaya/server.py` |
+| Guardrails, input | Retrieved text is escaped, stripped of invisible characters and marked as data, never instructions. A scanner withholds passages that look like instructions aimed at the model, including system-prompt and key exfiltration attempts. It first normalises Unicode, so zero-width characters and look-alike letters do not hide an instruction | `nyaya/guards.py` |
+| Generation | Any OpenAI-compatible server: vLLM, SGLang (both benchmarked in round 5), a hosted API, or `nyaya.hf_server` (one request at a time, the baseline). Answers stream; each must cite its sources or reply INSUFFICIENT. For multi-condition questions, Axon's evidence certificate is passed to the model | `nyaya/llm.py`, `AxonRAG.answer` |
 | Guardrails, output | Citations to sources that were never shown are removed; sentences without a citation are reported | `guards.check_answer` |
 | Monitoring | Time to first token, inter-token latency, stage timings and guardrail events per answer, in Prometheus format at `/metrics` | `nyaya/metrics.py` |
 | Load testing | Concurrency sweep with TTFT, inter-token latency, time per output token, throughput, GPU memory and utilisation, plus the server's own metrics | `nyaya/llm_bench.py` |
 | Fine-tuning | LoRA written out in full (no PEFT), fp16 with loss scaling for T4s, loss on the reply only, merged back into the weights so any server can load the result | `nyaya/lora.py` |
-| Evaluation | HotpotQA answers (exact match, F1), citation precision and recall, abstention when the evidence is withheld, prompt-injection attack success, and the MultiConIR condition check | `nyaya/rag_eval.py`, `scripts/round5.py` |
+| Evaluation | It measures:<ul><li>retrieval: Recall@5/10/20, MRR@10, nDCG@10, p50/p95/p99 latency</li><li>answers on HotpotQA: exact match, F1</li><li>citations: precision and recall</li><li>grounding: is the answer in the sources it cites, checked without an LLM judge</li><li>abstention when the evidence is withheld</li><li>attack success for 8 injection styles</li><li>cross-tenant leakage</li><li>the MultiConIR condition check</li></ul> | `nyaya/rag_eval.py`, `scripts/round5.py` |
 
 ```bash
 python -m nyaya.rag build --src docs/ --out index/ --model lightonai/LateOn --plaid
@@ -105,9 +107,10 @@ python -m nyaya.rag ask --index index/ "linen or cotton shirt; for summer; made 
 ```
 
 **Results pending (round 5).** `scripts/round5.py` measures all of this on Kaggle T4s in one unattended run. The questions and test sets were fixed before running:
-- serving speed with vLLM against the one-request-at-a-time baseline
+- serving speed with vLLM and SGLang against the one-request-at-a-time baseline
 - answer quality, citations and abstention on 500 + 200 HotpotQA questions
-- attack success against three defence levels
+- attack success against three defence levels, for 8 injection styles including exfiltration and hidden Unicode
+- cross-tenant leakage on the real index
 - whether Axon's certificate helps the LLM name the condition a document breaks
 - whether the fine-tuned generator beats the base model
 
@@ -310,7 +313,9 @@ tests/                scoring, evidence, planner, guardrail, metrics, LoRA and s
 - `NYAYA_LLM_API_KEY` is read from the environment only, is sent only when set, and is refused over plain http to non-local hosts.
 - Retrieved text is HTML-escaped inside `<source>` tags before it reaches the LLM, and the system prompt treats sources as data. LLM output is printed, never executed. As with any RAG system, indexed documents can still try to influence the answer, so index only content you trust.
 - Retrieved passages that look like instructions to the model are withheld by an input scanner, and citations to sources that were never shown are removed from answers (`nyaya/guards.py`). Round 5 measures attack success with and without these defences.
-- The HTTP service supports an API key (`AXON_API_KEY`, compared in constant time), a per-client rate limit and request size caps. Error replies do not expose internals. It binds to localhost by default; put it behind TLS before exposing it.
+- The HTTP service supports an API key (`AXON_API_KEY`) or one key per tenant (`AXON_TENANT_KEYS`), compared in constant time. It also has a per-client rate limit and request size caps. Error replies do not expose internals. It binds to localhost by default; put it behind TLS before exposing it.
+- In a multi-tenant index, documents are filtered by tenant inside retrieval, never by the prompt. A query without a tenant is refused, and there is no cache that could leak across tenants. Round 5 counts cross-tenant results on the real index.
+- Ingestion enforces file-size and PDF-page limits and checks the PDF signature instead of trusting the extension. Symbolic links and linked folders are not followed.
 - Fine-tuned weights are saved as safetensors (no pickle).
 - The experiment runner quotes every user-supplied value before it reaches the shell, and runs servers and installs without a shell.
 

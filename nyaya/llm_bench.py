@@ -126,6 +126,7 @@ def run_level(base, model, prompts, concurrency, n_requests, max_tokens=128, ign
            "prompt_tokens_per_s": round(in_tok / wall, 1), "mean_prompt_tokens": round(in_tok / max(1, len(ok)), 1),
            "mean_output_tokens": round(out_tok / max(1, len(ok)), 1),
            "tokens_per_chunk": round(out_tok / max(1, sum(r["chunks"] for r in ok)), 2)}
+    row["fixed_length"] = ignore_eos
     row.update(g.summary())
     row["server"] = {k: round(v, 5) for k, v in server_side(before, after).items()}
     if len(ok) < len(res):
@@ -140,6 +141,11 @@ def benchmark(base, model, prompts, levels=(1, 4, 16, 32), requests_per_level=No
             timed_chat(p, model=model, base=base, max_tokens=8, temperature=0.0)
         except Exception:
             pass
+    if ignore_eos:                                              # not every server accepts it: then lengths vary
+        try:
+            timed_chat(prompts[0], model=model, base=base, max_tokens=8, temperature=0.0, extra={"ignore_eos": True})
+        except Exception:
+            ignore_eos = False
     rows = []
     for c in levels:
         n = requests_per_level(c) if callable(requests_per_level) else (requests_per_level or max(16, 4 * c))
