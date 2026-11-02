@@ -85,9 +85,18 @@ def _allowed(client: str) -> bool:
 
 
 def _tenant_keys():
-    raw = os.environ.get("AXON_TENANT_KEYS", "")
-    pairs = [p.split(":", 1) for p in raw.split(",") if ":" in p]
-    return [(t.strip(), k.strip()) for t, k in pairs if t.strip() and len(k.strip()) >= 16]   # short keys are ignored
+    """[(tenant, key)], or None when AXON_TENANT_KEYS is set but malformed (then every request is
+    refused: a typo in the key list must never turn authentication off)."""
+    raw = os.environ.get("AXON_TENANT_KEYS", "").strip()
+    if not raw:
+        return []
+    pairs = []
+    for entry in raw.split(","):
+        t, sep, k = entry.partition(":")
+        if not sep or not t.strip() or len(k.strip()) < 16:
+            return None
+        pairs.append((t.strip(), k.strip()))
+    return pairs
 
 
 @app.middleware("http")
@@ -99,6 +108,10 @@ async def guard(request: Request, call_next):
         got = request.headers.get("authorization", "").encode()
         tenant_keys = _tenant_keys()
         key = os.environ.get("AXON_API_KEY")
+        if tenant_keys is None:
+            REQS.inc(path=path, status="503")
+            return JSONResponse({"detail": "server misconfigured: AXON_TENANT_KEYS needs tenant:key pairs, "
+                                           "keys of 16+ characters"}, status_code=503)
         if tenant_keys:
             match = None
             for tenant, k in tenant_keys:                  # check every key: timing reveals nothing

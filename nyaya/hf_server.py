@@ -67,14 +67,20 @@ def _prompt_ids(messages):
 
 def _generate(req: ChatRequest):
     """Yields text pieces; returns usage via the final yielded dict."""
-    from transformers import TextIteratorStreamer
+    from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
     tok, model = STATE["tok"], STATE["model"]
+    cancel = threading.Event()
+
+    class Cancelled(StoppingCriteria):                   # a client that disconnects stops its generation
+        def __call__(self, input_ids, scores, **kw):
+            return cancel.is_set()
     with LOCK:
         t0 = time.perf_counter()
         ids = _prompt_ids(req.messages)
         streamer = TextIteratorStreamer(tok, skip_prompt=True, skip_special_tokens=True)
         kw = dict(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=req.max_tokens,
-                  streamer=streamer, do_sample=req.temperature > 0, pad_token_id=tok.pad_token_id or tok.eos_token_id)
+                  streamer=streamer, do_sample=req.temperature > 0, pad_token_id=tok.pad_token_id or tok.eos_token_id,
+                  stopping_criteria=StoppingCriteriaList([Cancelled()]))
         if req.temperature > 0:
             kw["temperature"] = req.temperature
         if req.ignore_eos:
@@ -87,13 +93,16 @@ def _generate(req: ChatRequest):
         th = threading.Thread(target=run)
         th.start()
         first = None
-        for piece in streamer:
-            if piece:
-                if first is None:
-                    first = time.perf_counter()
-                    TTFT.observe(first - t0)
-                yield piece
-        th.join()
+        try:
+            for piece in streamer:
+                if piece:
+                    if first is None:
+                        first = time.perf_counter()
+                        TTFT.observe(first - t0)
+                    yield piece
+        finally:                                          # also on disconnect: never leave a generation running
+            cancel.set()
+            th.join()
         n_out = int(out["seq"].shape[1] - ids.shape[1]) if "seq" in out else 0
         E2E.observe(time.perf_counter() - t0)
         TOKENS.inc(n_out)

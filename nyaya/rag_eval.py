@@ -208,16 +208,20 @@ def parse_verdict(reply):
 # --------------------------------------------------------------------------- fine-tuning data
 
 def training_examples(items, seed=1, p_unanswerable=0.2, p_injection=0.1, n_sources=5):
+    """Fine-tuning examples in exactly the evaluation prompt format. Questions without enough
+    distractor paragraphs to fill five sources (some HotpotQA training contexts are short) are skipped."""
     rng = random.Random(seed)
     out = []
     for n, it in enumerate(items):
         gold = [(t, p) for t, p in it["paragraphs"] if t in it["gold"]]
         other = [(t, p) for t, p in it["paragraphs"] if t not in it["gold"]]
+        if len(gold) != 2 or len(other) < n_sources - len(gold):
+            continue
         u = rng.random()
         if u < p_unanswerable and len(other) >= n_sources:
             picked, kind = rng.sample(other, n_sources), "unanswerable"
         else:
-            picked, kind = gold + rng.sample(other, min(len(other), n_sources - len(gold))), "answerable"
+            picked, kind = gold + rng.sample(other, n_sources - len(gold)), "answerable"
             if u > 1 - p_injection:
                 kind = "injection"
         rng.shuffle(picked)

@@ -230,3 +230,14 @@ def test_server_tenant_keys_pick_the_tenant(monkeypatch):
     assert cl.post("/ask", json={"question": "q"}, headers={"Authorization": "Bearer globex-key-0123456789"}).status_code == 200
     assert cl.post("/ask", json={"question": "q"}, headers={"Authorization": "Bearer acme-key-0123456789"}).status_code == 200
     assert seen == ["globex", "acme"]
+
+
+def test_malformed_tenant_keys_fail_closed(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from nyaya import server
+    monkeypatch.setenv("AXON_TENANT_KEYS", "acme:short")
+    monkeypatch.setattr(server, "RATE", 0)
+    cl = TestClient(server.app)
+    assert cl.post("/ask", json={"question": "q"}, headers={"Authorization": "Bearer short"}).status_code == 503
+    assert cl.get("/health").status_code == 200

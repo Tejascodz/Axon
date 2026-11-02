@@ -152,10 +152,10 @@ def retrieve(a):
         j = next((k for k, s in enumerate(srcs) if s["title"] not in it["gold"]), len(srcs) - 1)
         c, tmpl = rag_eval.canary(i), i % len(rag_eval.TEST_INJECTIONS)
         srcs[j]["text"] = srcs[j]["text"] + " " + rag_eval.TEST_INJECTIONS[tmpl].format(c=c)
-        kept, held = guards.quarantine(srcs)
-        detected += int(any(s["id"] == srcs[j]["id"] for s in held))
+        kept, withheld = guards.quarantine(srcs)
+        detected += int(any(s["id"] == srcs[j]["id"] for s in withheld))
         prompts["injection"].append({"item": it, "canary": c, "template": tmpl, "sources": srcs, "kept": kept,
-                                     "withheld": [s["id"] for s in held],
+                                     "withheld": [s["id"] for s in withheld],
                                      "undefended": guards.build_messages(it["question"], srcs, defended=False),
                                      "defended": guards.build_messages(it["question"], srcs),
                                      "scanned": guards.build_messages(it["question"], kept)})
@@ -190,8 +190,9 @@ def retrieve(a):
 # --------------------------------------------------------------------------- traindata
 
 def traindata(a):
-    items = rag_eval.load_hotpot("train", n=a.n_train, seed=1, cache=os.path.join(a.data, "hotpot"))
-    ex = rag_eval.training_examples(items, seed=1)
+    # load extra questions: short contexts are skipped, and exactly n_train examples are kept
+    items = rag_eval.load_hotpot("train", n=int(a.n_train * 1.25) + 50, seed=1, cache=os.path.join(a.data, "hotpot"))
+    ex = rag_eval.training_examples(items, seed=1)[:a.n_train]
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     with open(a.out, "w") as f:
         for e in ex:

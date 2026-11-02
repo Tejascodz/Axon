@@ -117,7 +117,7 @@ def build(src: str, ckpt: str, out: str):
     for root, _, files in os.walk(src):
         for f in sorted(files):
             p = os.path.join(root, f)
-            if f.lower().endswith((".txt", ".md", ".pdf")) and not os.path.islink(p):   # never follow links out of src
+            if f.lower().endswith((".txt", ".md", ".pdf")) and check_file(p) is None:     # same limits as build_axon
                 for i, c in enumerate(chunk(read_file(p))):
                     chunks.append({"id": f"c{len(chunks)}", "source": os.path.relpath(p, src), "part": i, "text": c})
     model = load_retriever(ckpt)

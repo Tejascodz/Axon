@@ -82,9 +82,29 @@ def gpu_env(gpu):
 
 # --------------------------------------------------------------------------- servers
 
+def wait_gpu_free(gpu, timeout=180, below_mib=1500):
+    """Wait until a stopped server's memory is really released, so the next server on this GPU
+    does not start out of memory."""
+    if gpu is None or not shutil.which("nvidia-smi"):
+        return True
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits", "-i", str(gpu)],
+                           capture_output=True, text=True)
+        try:
+            if float(r.stdout.strip().split()[0]) < below_mib:
+                return True
+        except (ValueError, IndexError):
+            return True
+        time.sleep(5)
+    log(f"GPU {gpu} still holds memory after {timeout} s")
+    return False
+
+
 class Server:
     def __init__(self, cmd, env, logname, base):
         self.base, self.logname = base, logname
+        self.gpu = env.get("CUDA_VISIBLE_DEVICES")
         self.f = open(f"logs/{logname}.log", "a")
         self.f.write("$ " + " ".join(shlex.quote(c) for c in cmd) + "\n")
         self.f.flush()
@@ -106,17 +126,23 @@ class Server:
         return False
 
     def stop(self):
-        if self.p.poll() is None:
-            try:
-                os.killpg(self.p.pid, signal.SIGTERM)
-                self.p.wait(timeout=60)
-            except Exception:
-                try:
-                    os.killpg(self.p.pid, signal.SIGKILL)
-                except Exception:
-                    pass
+        # the whole process group, even if the main process already exited: serving engines run
+        # worker processes that can outlive it and keep holding GPU memory
+        try:
+            os.killpg(self.p.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            self.p.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(3)
+        try:
+            os.killpg(self.p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         self.f.close()
-        time.sleep(5)
+        wait_gpu_free(self.gpu)
 
 
 def free_gb(path="/tmp"):
@@ -267,16 +293,20 @@ def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env=None
         return
     ev_vllm_env.wait()
     served = "base"
-    s = start_vllm(a.llm, served, gpu)
-    if s is None:
+    base_done = all(os.path.exists(f) for f in ("results/r5_bench_vllm.json", "results/r5_gen_base.json"))
+    s = None if base_done else start_vllm(a.llm, served, gpu)       # a re-run with earlier results skips this
+    if s is None and base_done:
+        log("base-model results already present; skipping to the fine-tuned model")
+    elif s is None:
         log("vLLM did not start with any setting; falling back to the transformers server (smaller test sets)")
         a.no_vllm = True
         return lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env)
-    step("bench_vllm", [PY, "scripts/r5_steps.py", "bench", "--base", s.base, "--model", served, "--tag", "vllm",
-                        "--gpu", str(gpu)], "r5_bench_vllm", timeout=3600, done_file="results/r5_bench_vllm.json")
-    step("generate_base", [PY, "scripts/r5_steps.py", "generate", "--base", s.base, "--model", served, "--tag", "base"],
-         "r5_gen_base", timeout=4 * 3600, done_file="results/r5_gen_base.json")
-    s.stop()
+    if s is not None:
+        step("bench_vllm", [PY, "scripts/r5_steps.py", "bench", "--base", s.base, "--model", served, "--tag", "vllm",
+                            "--gpu", str(gpu)], "r5_bench_vllm", timeout=3600, done_file="results/r5_bench_vllm.json")
+        step("generate_base", [PY, "scripts/r5_steps.py", "generate", "--base", s.base, "--model", served, "--tag", "base"],
+             "r5_gen_base", timeout=4 * 3600, done_file="results/r5_gen_base.json")
+        s.stop()
     # SGLang on the same GPU, model and prompts, while fine-tuning runs on the other GPU
     if ev_sglang_env is not None and not a.no_sglang and not os.path.exists("results/r5_bench_sglang.json"):
         ev_sglang_env.wait()
@@ -549,7 +579,7 @@ def main():
         finally:
             ev_v.set()
         try:
-            if not a.no_sglang:
+            if not a.no_sglang and not os.path.exists("results/r5_bench_sglang.json"):
                 a.sglang_py = sglang_python()
         finally:
             ev_s.set()
