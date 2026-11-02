@@ -3,6 +3,9 @@
   python scripts/round5.py
   python scripts/round5.py --summary_only
 
+Every step writes its output file when it finishes, and a re-run skips steps whose output exists,
+so a run can be continued from an earlier run's results/ folder (copy it in first).
+
 GPU 1: index HotpotQA with Axon (LateOn) -> retrieval metrics and every test prompt -> LoRA
        fine-tuning of the generator (own implementation, fp16).
 GPU 0: the generator (Qwen3-4B-Instruct-2507) served three ways: a one-request-at-a-time transformers
