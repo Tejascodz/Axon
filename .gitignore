@@ -16,6 +16,14 @@ index/
 logs/
 results/*
 !results/simulation.json
+# published results (small); prompts (17 MB) and the LoRA adapter (66 MB) stay in the run output
+!results/ROUND*.md
+!results/r5_*.json
+!results/r5_*.txt
+results/r5_prompts.json
+!results/r5_lora/
+results/r5_lora/*
+!results/r5_lora/train_report.json
 *.pt
 *.pth
 *.bin

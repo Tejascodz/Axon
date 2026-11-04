@@ -1,0 +1,17 @@
+{
+ "examples": 1600,
+ "skipped_too_long": 0,
+ "non_finite_losses": 0,
+ "out_of_memory": 0,
+ "steps": 200,
+ "planned_steps": 200,
+ "trainable_params": 33030144,
+ "first_loss": 1.99850732088089,
+ "last_loss": 0.0866402292776911,
+ "minutes": 82.99651130040486,
+ "r": 16,
+ "alpha": 32.0,
+ "lr": 0.0001,
+ "accum": 8,
+ "epochs": 1
+}

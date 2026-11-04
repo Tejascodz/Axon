@@ -1,0 +1,26 @@
+{
+ "python": "3.13.16",
+ "cuda_device_order": "PCI_BUS_ID",
+ "gpus": [
+  "Tesla T4, 580.178.04, 15360 MiB",
+  "Tesla T4, 580.178.04, 15360 MiB"
+ ],
+ "downloads": {
+  "model": {
+   "ok": true,
+   "info": [
+    "/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/cdbee75f17c01a7cc42f958dc650907174af0554",
+    "/root/.cache/huggingface/hub/models--lightonai--LateOn/snapshots/62911e105059585d244384c7d17826e35f669c17"
+   ]
+  },
+  "multiconir": {
+   "ok": true,
+   "info": "cloned"
+  },
+  "nanobeir": {
+   "ok": false,
+   "info": "RuntimeError: skipped"
+  }
+ },
+ "multiconir_commit": "9884fb3e1e5c06c9e026aa0042a679412dad1425"
+}

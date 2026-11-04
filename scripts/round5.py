@@ -525,7 +525,9 @@ def summary():
         if not header:
             header = True
             rerun = os.path.exists(f"{ROOT}/results/r5_bench_vllm_run1.json")
-            L += ["## Q9 Serving (T4, fp16, Qwen3-4B-Instruct-2507, ~1,100-token RAG prompts, 128-token outputs)", "",
+            toks = [r["mean_prompt_tokens"] for r in b["rows"]]
+            L += [f"## Q9 Serving (T4, fp16, Qwen3-4B-Instruct-2507, ~{round(sum(toks) / len(toks), -1):.0f}-token RAG prompts, "
+                  "128-token outputs)", "",
                   "Every request uses a prompt not sent before in that benchmark, so prefix caching helps only with the "
                   "shared system prompt. " +
                   ("vLLM and SGLang were measured back to back in a separate serving-only run, with nothing running on "

@@ -1,0 +1,104 @@
+{
+ "disk": {
+  "free_gb": 957.9,
+  "time": "16:09:33"
+ },
+ "vllm_install_vllm_env_0.33.0": {
+  "ok": true,
+  "info": "0.33.0 2.14.0+cu132 13.2\n",
+  "time": "16:14:48"
+ },
+ "sglang_install_sglang_env": {
+  "ok": true,
+  "info": "0.5.23 2.14.1+cu132 13.2\n",
+  "time": "16:17:19"
+ },
+ "retrieve": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 8.7,
+  "time": "12:28:09"
+ },
+ "traindata": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 0.6,
+  "time": "12:28:43"
+ },
+ "bench_hf": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 2.5,
+  "time": "12:31:31"
+ },
+ "vllm_base": {
+  "ok": true,
+  "version": "0.33.0",
+  "flags": [],
+  "time": "16:20:03"
+ },
+ "bench_vllm": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 5.8,
+  "time": "16:25:52"
+ },
+ "generate_base": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 23.4,
+  "time": "13:03:45"
+ },
+ "train": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 84.1,
+  "time": "13:52:51"
+ },
+ "vllm_ft": {
+  "ok": true,
+  "version": "0.33.0",
+  "flags": [],
+  "time": "16:39:20"
+ },
+ "generate_ft": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 24.4,
+  "time": "14:19:48"
+ },
+ "bench_vllm_ft": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 2.9,
+  "time": "16:42:12"
+ },
+ "sglang_base_run1": {
+  "ok": false,
+  "tried": "--attention-backend triton --disable-cuda-graph",
+  "time": "13:10:08"
+ },
+ "rebuild_ft": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 1.7,
+  "time": "16:11:14"
+ },
+ "cuda_link": {
+  "ok": true,
+  "info": "/usr/local/nvidia/lib64/libcuda.so.580.178.04",
+  "time": "16:25:56"
+ },
+ "sglang_base": {
+  "ok": true,
+  "version": "0.5.23",
+  "flags": [],
+  "time": "16:32:48"
+ },
+ "bench_sglang": {
+  "ok": true,
+  "rc": 0,
+  "minutes": 3.9,
+  "time": "16:36:40"
+ }
+}

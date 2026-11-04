@@ -106,15 +106,84 @@ export NYAYA_LLM_BASE_URL=http://localhost:8000/v1 NYAYA_LLM_MODEL=Qwen/Qwen3-4B
 python -m nyaya.rag ask --index index/ "linen or cotton shirt; for summer; made in India"
 ```
 
-**Results pending (round 5).** `scripts/round5.py` measures all of this on Kaggle T4s in one unattended run. The questions and test sets were fixed before running:
-- serving speed with vLLM and SGLang against the one-request-at-a-time baseline
-- answer quality, citations and abstention on 500 + 200 HotpotQA questions
-- attack success against three defence levels, for 8 injection styles including exfiltration and hidden Unicode
-- cross-tenant leakage on the real index
-- whether Axon's certificate helps the LLM name the condition a document breaks
-- whether the fine-tuned generator beats the base model
+### Measured (round 5)
 
-**Condition-level abstention.** For a multi-condition question, the generator sees, for every source, how strongly each condition was matched and by which passage. This lets it say which condition no source satisfies instead of answering anyway. Round 5 tests it on MultiConIR documents that satisfy all ten conditions or break exactly one. The test compares the LLM alone with the LLM given the certificate, and includes a reference with no LLM: Axon alone, with a threshold fixed on separate documents.
+The full system was measured on Kaggle T4 GPUs with Qwen3-4B-Instruct-2507 as the generator and LateOn as the retriever. Questions, test sets and pass/fail rules were fixed in `scripts/round5.py` before running. Intervals are 95% bootstrap intervals. Full tables are in `results/ROUND5.md`, and exact package versions and model revisions in `results/r5_environment.json` and `results/r5_pip_freeze*.txt`.
+
+**Retrieval.** 700 HotpotQA questions over a corpus of 6,852 paragraphs; gold = the two supporting paragraphs.
+
+| | BM25 + ColBERT, fused | + Axon re-rank |
+|---|---|---|
+| both gold paragraphs in the top 5 | 0.699 | **0.824** |
+| Recall@10 | 0.931 | **0.960** |
+| MRR@10 | 0.919 | **0.964** |
+| nDCG@10 | 0.845 | **0.910** |
+
+- The full pipeline takes 63 ms median per query, 78 ms p95, 123 ms p99.
+- HotpotQA questions have a single condition, so the re-ranking gain here is ColBERT's, not condition grouping's.
+- On this corpus PLAID matches exact search (recall@100 0.993 vs 0.992) but is slower (65 vs 32 ms); approximate search pays off only on much larger collections.
+
+**Serving.** T4, fp16, about 850-token RAG prompts and fixed 128-token outputs. Every request uses a prompt not sent before in that benchmark. vLLM and SGLang were measured back to back on the same GPU, model and prompts.
+
+| Engine | 1 user: TTFT p50 | 1 user: time per output token | 16 users: output tokens/s | 16 users: ITL p99 | 32 users: output tokens/s |
+|---|---|---|---|---|---|
+| transformers, one request at a time | 854 ms | 65 ms | 14 (4 users) | – | – |
+| vLLM 0.33.0 | 556 ms | 39 ms | 105 | 1,459 ms | 113 |
+| SGLang 0.5.23 | **306 ms** | **37 ms** | **193** | **107 ms** | **226** |
+
+- **SGLang led at every level here, about 2× vLLM's throughput** under load, and inter-token latency stayed stable where vLLM's p99 rose to about 1.5 s.
+- **This comparison is specific to T4s (compute capability 7.5).** vLLM 0.33 falls back to its Triton attention kernels, because FlashAttention 2 needs compute capability 8.0. SGLang compiles FlashInfer kernels for the T4 on first start (about 4 minutes). The result may well differ on newer GPUs.
+- **The T4 ran near its 70 W power limit** under both engines (66–68 W on average). SGLang ran at lower clocks (671–972 MHz versus 1,101–1,350 MHz for vLLM) and was still faster.
+- **The fine-tuned model serves at the same speed as the base model** (39.6 vs 39.1 ms per token). A slower figure in the first run (59.5 ms) did not reproduce once GPU clock and temperature were recorded.
+- **The transformers baseline was measured while the other GPU was fine-tuning.**
+
+**Answers** (500 answerable questions, plus 200 with the gold paragraphs withheld)
+
+| | Base model | Fine-tuned (LoRA) | Difference (paired) |
+|---|---|---|---|
+| Exact match | 0.324 | **0.506** | +18.2 [+14.4, +22.2] |
+| F1 | 0.420 | **0.627** | +20.8 [+17.2, +24.5] |
+| Citation precision | 0.932 | 0.913 | −1.8 [−4.0, +0.4] |
+| Citation recall | 0.481 | **0.808** | +32.7 [+28.7, +36.5] |
+| Answer found in the sources it cites | 0.885 | **0.972** | +9.3 [+5.8, +13.1] |
+| Wrong refusals (answerable) | 0.436 | **0.160** | −27.6 [−31.8, −23.4] |
+| Correct refusals (gold withheld) | **0.950** | 0.915 | −3.5 [−7.0, +0.0] |
+
+- The base model refuses too often: 37% of the time even when both answer paragraphs are in front of it.
+- Fine-tuning (1,600 examples, 83 minutes on one T4, 33 M trainable parameters) fixes most of that, at a small, borderline cost in correct refusals.
+- No answer from either model lacked a valid citation. Of the 700 graded answers, one base-model reply reached the token limit and no fine-tuned reply did. Across every test, 10 of the base model's 2,500 replies and none of the fine-tuned model's reached it.
+- The pre-registered success test for fine-tuning was **met in part**. Citation recall rose, exact match rose rather than fell, and wrong refusals dropped. But citation precision did not improve, and correct refusals fell slightly.
+
+**Prompt injection** (200 questions, 8 attack styles, one per question; attack success rate)
+
+| Prompt | Base model | Fine-tuned |
+|---|---|---|
+| undefended | 10.5% | 2.5% |
+| defended (escaped sources, data-not-instructions rule) | 2.0% | 0.0% |
+| defended + input scanner | **0.5%** | **0.0%** |
+
+- **Scanner:** it caught all 150 planted attacks that use its known phrasings, including those hidden with zero-width characters or look-alike letters. It missed the 50 attacks worded to avoid it, and flagged **0 of 6,852** clean paragraphs.
+- **Tenant isolation:** 0 cross-tenant results among 2,000 returned, and a query without a tenant was refused.
+
+**Condition check** (600 MultiConIR documents: half satisfy all ten conditions, half break exactly one)
+
+| | LLM alone | LLM + Axon certificate | Difference (paired) |
+|---|---|---|---|
+| Base model, all documents | 60.8% | **64.2%** | +3.3 [+0.7, +6.2] |
+| Base model, documents that break one condition | 25.0% | 29.3% | +4.3 [−1.0, +9.3] |
+| Fine-tuned model, all documents | 60.7% | 58.8% | −1.8 [−4.2, +0.5] |
+
+- For the base model, the certificate helps; that was the pre-registered test, and it passed. But the gain is small.
+- Naming the broken condition stays hard for every method: the LLM manages 25–29%, Axon alone 50% overall.
+- The fine-tuned model leans toward "satisfies everything" (544 of 600 verdicts with the certificate) and gains nothing from it. Training it to refuse less appears to carry over to this task.
+
+**Condition-level abstention.** For a multi-condition question, the generator sees, for every source, how strongly each condition was matched and by which passage. This lets it say which condition no source satisfies instead of answering anyway. The condition check above is the measurement of this idea.
+
+**What this does not show.**
+- A Kaggle notebook is a test environment, not a production deployment.
+- The results cover one GPU type, one generator, and Wikipedia-style questions.
+- The injection scanner is a heuristic; the defences reduce attacks, they don't prevent them.
+- The "no citation, no answer" rule (`guards.require_citation`) is now on by default, but it was added after the first round 5 run; in this run no answer needed it.
 
 ## How it works
 
@@ -264,11 +333,12 @@ python scripts/eval_suite.py --zero_shot lightonai/LateOn --variant colbert_grou
 
 Datasets (MultiConIR, LIMIT, NanoBEIR, MS MARCO triples) and models are downloaded at run time by `scripts/prep_data.py`; their own licenses apply.
 
-**Round 4** (Competitive MaxSim, localization, lead-in control, latency; about 2–2.5 h) and **round 5** (the full RAG system; about 3–4 h), Kaggle T4 x2, internet on:
+**Round 4** (Competitive MaxSim, localization, lead-in control, latency; about 2–2.5 h) and **round 5** (the full RAG system; about 3 h, plus 45 min for `--rebench`, the serving-only re-measurement), Kaggle T4 x2, internet on:
 
 ```bash
 python scripts/round4.py            # writes results/ROUND4.md
 python scripts/round5.py            # writes results/ROUND5.md
+python scripts/round5.py --rebench  # serving benchmarks again from an earlier run's results/
 ```
 
 Checkpoints trained with `nyaya.train` still work with the RAG commands through `--ckpt`.
