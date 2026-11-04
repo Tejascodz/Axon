@@ -241,3 +241,12 @@ def test_malformed_tenant_keys_fail_closed(monkeypatch):
     cl = TestClient(server.app)
     assert cl.post("/ask", json={"question": "q"}, headers={"Authorization": "Bearer short"}).status_code == 503
     assert cl.get("/health").status_code == 200
+
+
+def test_no_citation_no_answer():
+    c = guards.check_answer("Answer: Paris\nEvidence: It is the capital of France.", ["c1"])
+    assert not c.abstained and not c.cited
+    r = guards.require_citation(c)
+    assert r.abstained and r.answer == guards.INSUFFICIENT
+    ok = guards.check_answer("Answer: Paris [c1]\nEvidence: capital [c1].", ["c1"])
+    assert guards.require_citation(ok) is ok

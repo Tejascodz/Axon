@@ -302,7 +302,7 @@ class AxonRAG:
         return hits
 
     def answer(self, q: str, k: int = 5, scan: bool = True, certificate: bool = True, max_tokens: int = 256,
-               tenant: str | None = None, **llm_kw) -> dict:
+               tenant: str | None = None, require_citation: bool = True, **llm_kw) -> dict:
         hits = self.retrieve(q, k=k, tenant=tenant)
         sources = [{"id": h["id"], "title": h.get("source", ""), "text": h["text"]} for h in hits]
         withheld = []
@@ -323,6 +323,9 @@ class AxonRAG:
         for g in t["itl"]:
             RAG_ITL.observe(g)
         chk = guards.check_answer(t["text"], [s["id"] for s in sources])
+        if require_citation and not chk.abstained and not chk.cited:
+            chk = guards.require_citation(chk)
+            RAG_EVENTS.inc(event="uncited_answer_withheld")
         RAG_EVENTS.inc(event="abstained" if chk.abstained else "answered")
         if chk.invalid_citations:
             RAG_EVENTS.inc(len(chk.invalid_citations), event="invalid_citation_removed")

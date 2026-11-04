@@ -6,7 +6,9 @@ time per output token, end-to-end latency and throughput, at several concurrency
 
 Every request streams, so latencies are measured on the client exactly as a user would see them.
 Outputs are fixed-length (`ignore_eos`, supported by vLLM and nyaya.hf_server) so that servers are
-compared on the same amount of work. The server's own Prometheus metrics (vLLM's /metrics) are
+compared on the same amount of work. Every request in a run gets a prompt not used before in that run
+(warm-up and earlier levels included), so a server's prefix cache cannot make later levels look
+faster; only the system prompt, which every real request shares, can be cached. The server's own Prometheus metrics (vLLM's /metrics) are
 read before and after each level, and GPU memory and utilisation are sampled with nvidia-smi.
 """
 from __future__ import annotations
@@ -95,8 +97,8 @@ class GpuSampler:
                 "gpu_mem_peak_mib": max(m for _, m in self.samples)}
 
 
-def run_level(base, model, prompts, concurrency, n_requests, max_tokens=128, ignore_eos=True, gpu=None):
-    work = [prompts[i % len(prompts)] for i in range(n_requests)]
+def run_level(base, model, work, concurrency, max_tokens=128, ignore_eos=True, gpu=None):
+    n_requests = len(work)
     extra = {"ignore_eos": True} if ignore_eos else None
 
     def one(msgs):
@@ -136,18 +138,30 @@ def run_level(base, model, prompts, concurrency, n_requests, max_tokens=128, ign
 
 def benchmark(base, model, prompts, levels=(1, 4, 16, 32), requests_per_level=None, max_tokens=128,
               ignore_eos=True, gpu=None, warmup=2):
-    for p in prompts[:warmup]:                                  # compile / cache warm-up, not measured
+    """`prompts` is a pool; each warm-up request and each benchmark request takes the next unused one
+    (the pool is only reused, with a note in the row, if it runs out)."""
+    pos = 0
+
+    def take(n):
+        nonlocal pos
+        out = [prompts[(pos + i) % len(prompts)] for i in range(n)]
+        pos += n
+        return out, pos > len(prompts)
+    for p in take(warmup)[0]:                                    # compile / cache warm-up, not measured
         try:
             timed_chat(p, model=model, base=base, max_tokens=8, temperature=0.0)
         except Exception:
             pass
     if ignore_eos:                                              # not every server accepts it: then lengths vary
         try:
-            timed_chat(prompts[0], model=model, base=base, max_tokens=8, temperature=0.0, extra={"ignore_eos": True})
+            timed_chat(take(1)[0][0], model=model, base=base, max_tokens=8, temperature=0.0, extra={"ignore_eos": True})
         except Exception:
             ignore_eos = False
     rows = []
     for c in levels:
         n = requests_per_level(c) if callable(requests_per_level) else (requests_per_level or max(16, 4 * c))
-        rows.append(run_level(base, model, prompts, c, n, max_tokens, ignore_eos, gpu))
+        work, reused = take(n)
+        row = run_level(base, model, work, c, max_tokens, ignore_eos, gpu)
+        row["prompts_reused"] = reused
+        rows.append(row)
     return rows

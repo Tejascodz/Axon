@@ -169,3 +169,15 @@ def check_answer(reply: str, provided_ids) -> Checked:
                     and not re.match(r"^\s*\**\s*evidence\s*\**\s*:\s*(the\s+)?sources?\s+do", s, re.I):
                 uncited.append(s)
     return Checked(ans, abstained, text, cited, invalid, uncited, well_formed)
+
+
+WITHHELD_TEXT = (f"Answer: {INSUFFICIENT}\n"
+                 "Evidence: A draft answer cited no source, so it was withheld.")
+
+
+def require_citation(chk: Checked) -> Checked:
+    """No citation, no answer: an answer that cites none of the sources shown is replaced by a
+    refusal, so every answer that reaches a user can be traced to a source."""
+    if chk.abstained or chk.cited:
+        return chk
+    return Checked(INSUFFICIENT, True, WITHHELD_TEXT, [], chk.invalid_citations, [], chk.well_formed)

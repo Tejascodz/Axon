@@ -266,7 +266,7 @@ def generate(a):
 def bench(a):
     from nyaya.llm_bench import benchmark
     P = json.load(open(f"{R}/r5_prompts.json"))
-    prompts = [p["messages"] for p in P["answer"][:64]]
+    prompts = [p["messages"] for p in P["answer"]]               # a pool of 500: no prompt is sent twice
     levels = tuple(int(x) for x in a.levels.split(","))
     rows = benchmark(a.base, a.model, prompts, levels=levels, max_tokens=a.max_tokens,
                      requests_per_level=(lambda c: a.requests or max(16, 4 * c)), gpu=a.gpu)

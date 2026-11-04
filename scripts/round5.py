@@ -152,14 +152,17 @@ def free_gb(path="/tmp"):
     return shutil.disk_usage(path).free / 2 ** 30
 
 
-def make_env(env_dir, specs, module, logname):
-    """A separate Python environment for a serving engine, so its pinned torch never touches ours."""
+def make_env(env_dir, specs, module, logname, python=None):
+    """A separate Python environment for a serving engine, so its pinned torch never touches ours.
+    `python` picks another interpreter version (uv downloads it if the machine does not have it)."""
     py = f"{env_dir}/bin/python"
     if os.path.exists(py) and subprocess.run([py, "-c", f"import {module}"], capture_output=True).returncode == 0:
         return py
     if sh([PY, "-m", "pip", "install", "-q", "uv"], logname) != 0:
         return None
-    if sh([PY, "-m", "uv", "venv", "--python", PY, env_dir], logname) != 0:
+    made = python and (sh([PY, "-m", "uv", "venv", "--python", python, "--managed-python", env_dir], logname) == 0
+                       or sh([PY, "-m", "uv", "venv", "--python", python, env_dir], logname) == 0)
+    if not made and sh([PY, "-m", "uv", "venv", "--python", PY, env_dir], logname) != 0:
         return None
     for spec in specs:
         # --torch-backend=auto picks the PyTorch CUDA build that matches this machine's driver
@@ -183,7 +186,9 @@ def sglang_python():
     if free_gb() < 25:
         status("sglang_install", ok=False, info=f"skipped: only {free_gb():.0f} GB disk free")
         return None
-    return make_env("/tmp/sglang_env", ["sglang", "sglang[all]"], "sglang", "sglang_install")
+    # Python 3.12: SGLang depends on outlines-core, which has no ready-made build for 3.13 and would
+    # otherwise need a Rust compiler
+    return make_env("/tmp/sglang_env", ["sglang", "sglang[all]"], "sglang", "sglang_install", python="3.12")
 
 
 def start_vllm(model_path, served, gpu, port=8000):
@@ -255,8 +260,11 @@ def lane_retrieval_and_training(a, gpu, ev_retrieval, ev_train):
              "r5_retrieve", gpu, timeout=3 * 3600, done_file="results/r5_prompts.json")
     finally:
         ev_retrieval.set()
+    ft_done = all(os.path.exists(f) for f in ("results/r5_gen_ft.json", "results/r5_bench_vllm_ft.json"))
     try:
-        if a.skip_train:
+        if a.skip_train or ft_done:
+            if ft_done:
+                log("fine-tuned model results already present; not training again")
             return
         if step("traindata", [PY, "scripts/r5_steps.py", "traindata", *a.size_train], "r5_traindata",
                 timeout=3600, done_file="data/r5_train.jsonl"):
@@ -322,6 +330,8 @@ def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env=None
         else:
             log("SGLang not available on this machine; vLLM results stand alone")
     ev_train.wait()
+    if all(os.path.exists(f) for f in ("results/r5_gen_ft.json", "results/r5_bench_vllm_ft.json")):
+        return
     if not os.path.exists(f"{FT_DIR}/config.json"):
         log("no fine-tuned model; skipping its evaluation")
         return
@@ -464,6 +474,21 @@ def summary():
                 d = _fmt(_paired([float(r["abstained"]) for r in ft["arms"]["unanswerable"]],
                                  [float(r["abstained"]) for r in base["arms"]["unanswerable"]]), pct=True)
             L.append(f"| {k} | {_fmt(v)} | {_fmt(sf.get(k)) if ft else '–'} | {d} |")
+        L += ["", "**With the no-citation-no-answer rule.** The rule was added after round 5, so it is reported "
+                  "separately, not in place of the pre-registered results. It is applied to the same replies, "
+                  "and any answer that cites no source counts as a refusal.", "",
+              "| Measure | base | fine-tuned | fine-tuned − base (paired) |", "|---|---|---|---|"]
+
+        def ruled(g):
+            A, U = g["arms"]["answer"], g["arms"]["unanswerable"]
+            return {"EM": [0.0 if r.get("unsupported") else r["em"] for r in A],
+                    "F1": [0.0 if r.get("unsupported") else r["f1"] for r in A],
+                    "false abstention (answerable)": [float(r["abstained"] or bool(r.get("unsupported"))) for r in A],
+                    "abstention (gold withheld)": [float(r["abstained"] or bool(r.get("unsupported"))) for r in U]}
+        rb, rf = ruled(base), (ruled(ft) if ft else {})
+        for k2, vb in rb.items():
+            L.append(f"| {k2} | {_fmt(_boot(vb))} | {_fmt(_boot(rf[k2])) if ft else '–'} | "
+                     f"{_fmt(_paired(rf[k2], vb), pct=True) if ft else '–'} |")
         L += ["", "## Q11 Prompt injection (attack success rate, lower is better)", "",
               "| Prompt | base | fine-tuned | EM under attack (base) |", "|---|---|---|---|"]
         for arm, lab in (("undefended", "undefended (plain concatenation)"), ("defended", "defended (escaped sources, data-not-instructions rule)"),
