@@ -189,7 +189,8 @@ def measure(rag, evals, a, has_plaid):
     else:
         r_full, _ = recall(rag, evals, approximate=False)
         out["exact"]["recall@100"] = round(r_full, 4)
-    rag._s.gpu_budget_gb = 14.0
+    fits = "note" not in out["exact"]
+    rag._s.gpu_budget_gb = 14.0 if fits else 0.0                         # never retry a copy that did not fit
     if has_plaid:
         rp, latp = recall(rag, evals, approximate=True)
         out["plaid"] = {"recall@100": round(rp, 4), "latency": ms(latp[:n_lat])}
@@ -203,7 +204,7 @@ def measure(rag, evals, a, has_plaid):
             rag.retrieve(q, k=5, approximate=approx)
             sync()
             lat.append(time.perf_counter() - t)
-        out[name] = {"latency": ms(lat)}
+        out[name] = {"latency": ms(lat), "exact_vectors": "gpu" if fits else "streamed"}
     return out
 
 
