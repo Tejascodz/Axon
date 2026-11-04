@@ -53,6 +53,7 @@ class Index:
     D: torch.Tensor
     M: torch.Tensor
     offsets: list[list[tuple[int, int]]] | None
+    valid_only: bool = False            # D holds only unmasked tokens (built from a VectorStore)
 
 
 class Axon:
@@ -60,7 +61,7 @@ class Axon:
                  device: str | None = None, query_length: int = 128, batch_size: int = 32, fp16: bool = True):
         if method not in METHODS:
             raise ValueError(f"method must be one of {METHODS}")
-        self.method, self.batch_size = method, batch_size
+        self.method, self.batch_size, self.model_name = method, batch_size, model
         self.device = device or ("cuda" if torch.cuda.is_available() else
                                  "mps" if torch.backends.mps.is_available() else "cpu")
         self.fp16 = fp16 and self.device == "cuda"
@@ -91,6 +92,43 @@ class Axon:
                 offs.insert(1, (0, 0))
             out.append(offs)
         return out
+
+    def _valid_offsets(self, texts):
+        """Character spans of the unmasked document tokens only (what a VectorStore keeps), so that
+        evidence can be shown for store-backed results without storing offsets for the whole index."""
+        full = self._doc_offsets(texts)
+        m = self.backbone.model
+        feats = m.tokenize(list(texts), is_query=False)
+        mask = (feats["attention_mask"].bool() & m.skiplist_mask(feats["input_ids"], m.skiplist)).tolist()
+        out = []
+        for offs, row, am in zip(full, mask, feats["attention_mask"].tolist()):
+            n = int(sum(am))
+            out.append([o for o, keep in zip(offs, row[:n]) if keep] if len(offs) == n else None)
+        return out
+
+    def encode_store(self, documents: list[str], log=None):
+        """Encode a (possibly large) collection into a VectorStore, batch by batch on the device,
+        keeping only each document's valid token vectors on the CPU."""
+        from .store import VectorStore
+        docs = []
+        with torch.no_grad(), self._ctx():
+            for i in range(0, len(documents), self.batch_size):
+                D, M, _, _ = self._plain.encode(documents[i:i + self.batch_size], "d")
+                docs += [D[j][M[j]].half().cpu() for j in range(D.shape[0])]
+                if log and (i // self.batch_size) % 200 == 0:
+                    log(f"encoded {min(i + self.batch_size, len(documents))}/{len(documents)}")
+        return VectorStore.from_docs(docs, dim=self.backbone.hidden)
+
+    def store_subset(self, store, ids: list[int], texts: list[str]) -> Index:
+        """Candidates from a VectorStore as a small padded Index for re-ranking."""
+        dt = torch.float16 if self.fp16 else torch.float32
+        D, M = store.padded(ids, device=self.device, dtype=dt)
+        return Index(list(texts), D, M, None, valid_only=True)
+
+    @torch.no_grad()
+    def search_store(self, query: str, store, k: int = 100, allowed=None, gpu_budget_gb: float = 6.0) -> list[int]:
+        q = torch.as_tensor(self.query_vectors(query))
+        return store.search(q, k=k, allowed=allowed, device=self.device, gpu_budget_gb=gpu_budget_gb)
 
     def _split(self, query, conditions):
         if conditions:
@@ -179,21 +217,27 @@ class Axon:
                     ceil = own.diagonal().clamp(min=1e-3)
                 qmask = q[1][0]                                       # [C, L]
         order = scores.argsort(descending=True).tolist()[: top_k or scores.shape[0]]
+        offsets = idx.offsets
+        if clause is not None and explain and offsets is None and idx.valid_only:
+            try:                                                      # only for the results shown
+                offsets = dict(zip(order, self._valid_offsets([idx.texts[n] for n in order])))
+            except Exception:
+                offsets = None
         results = []
         for n in order:
             r = Result(index=n, text=idx.texts[n], score=float(scores[n]))
             if clause is not None and explain:
                 rel = (clause[n] / ceil).tolist()
+                offs_n = offsets[n] if offsets is not None else None
                 for c, cond in enumerate(conds_used):
-                    ev = self._evidence(idx, n, tok_idx[0, n, c], S[0, n, c], qmask[c]) if idx.offsets else []
+                    ev = self._evidence(idx.texts[n], offs_n, tok_idx[0, n, c], S[0, n, c], qmask[c]) if offs_n else []
                     r.conditions.append(ConditionMatch(cond, float(clause[n, c]), float(rel[c]), ev))
                 r.weakest = int(min(range(len(rel)), key=lambda c: rel[c]))
             results.append(r)
         return results
 
-    def _evidence(self, idx: Index, n: int, tokens, sims, mask, max_spans: int = 3):
-        """Passages of document n that the condition's tokens matched, strongest first."""
-        offs, text = idx.offsets[n], idx.texts[n]
+    def _evidence(self, text: str, offs, tokens, sims, mask, max_spans: int = 3):
+        """Passages of a document that the condition's tokens matched, strongest first."""
         picked = {}
         for t, s, ok in zip(tokens.tolist(), sims.tolist(), mask.tolist()):
             if ok and t < len(offs) and offs[t][1] > offs[t][0]:

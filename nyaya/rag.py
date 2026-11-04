@@ -174,129 +174,138 @@ RAG_EVENTS = REGISTRY.counter("rag_events_total", "Guardrail and outcome events"
 
 
 def build_axon(src_or_chunks, out: str, model: str = "lightonai/LateOn", plaid: bool = False, axon=None,
-               tenants_from_dirs: bool = False):
+               tenants_from_dirs: bool = False, log=None):
     """Index a folder (or a list of {"source", "text"[, "tenant"]} dicts) with Axon's ColBERT model.
     With `tenants_from_dirs`, each top-level folder is a tenant: its documents are only ever
-    retrieved for that tenant."""
+    retrieved for that tenant. Returns (axon, build report, chunks)."""
+    from . import index as ix
     from .axon import Axon
-    skipped = []
-    if isinstance(src_or_chunks, str):
-        chunks = []
-        for root, dirs, files in os.walk(src_or_chunks):
-            dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]   # never leave src
-            for f in sorted(files):
-                p = os.path.join(root, f)
-                if not f.lower().endswith((".txt", ".md", ".pdf")):
-                    continue
-                rel = os.path.relpath(p, src_or_chunks)
-                why = check_file(p)
-                if why is None:
-                    try:
-                        text = read_file(p)
-                    except Exception as e:                             # a broken file must not stop the build
-                        why = f"unreadable: {type(e).__name__}: {str(e)[:80]}"
-                if why:
-                    skipped.append({"source": rel, "reason": why})
-                    continue
-                for i, c in enumerate(chunk(text)):
-                    rec = {"source": rel, "part": i, "text": c}
-                    if tenants_from_dirs:
-                        rec["tenant"] = rel.split(os.sep)[0] if os.sep in rel else "_root"
-                    chunks.append(rec)
-    else:
-        chunks = [dict(c) for c in src_or_chunks]
-    for n, c in enumerate(chunks):
-        c["id"] = f"c{n}"
     ax = axon or Axon(model)
-    idx = ax.index([c["text"] for c in chunks])
-    os.makedirs(out, exist_ok=True)
-    torch.save({"D": idx.D.half().cpu(), "M": idx.M.cpu(), "offsets": idx.offsets}, f"{out}/vectors.pt")
-    with open(f"{out}/chunks.jsonl", "w") as f:
-        for c in chunks:
-            f.write(json.dumps(c) + "\n")
-    cfg = {"model": model, "plaid": False, "n": len(chunks), "skipped": skipped,
-           "multi_tenant": any("tenant" in c for c in chunks)}
-    if plaid:
-        from pylate import indexes
-        emb = [idx.D[i][idx.M[i]].float().cpu().numpy() for i in range(len(chunks))]
-        pl = indexes.PLAID(index_folder=out, index_name="plaid", override=True, show_progress=False)
-        pl.add_documents(documents_ids=[c["id"] for c in chunks], documents_embeddings=emb)
-        cfg["plaid"] = True
-    json.dump(cfg, open(f"{out}/config.json", "w"))
-    return ax, idx, chunks
+    report = ix.build(src_or_chunks, out, ax, plaid=plaid, tenants_from_dirs=tenants_from_dirs, log=log)
+    chunks = [json.loads(line) for line in open(f"{out}/chunks.jsonl")]
+    return ax, report, chunks
+
+
+class _Loaded:
+    """One consistent snapshot of an index folder."""
+
+    def __init__(self, index_dir, gpu_budget_gb):
+        from .store import VectorStore
+        for attempt in range(3):                                  # a writer may be mid-way: retry once settled
+            cfg_path = f"{index_dir}/config.json"
+            mtime = os.stat(cfg_path).st_mtime_ns
+            cfg = json.load(open(cfg_path))
+            chunks = [json.loads(line) for line in open(f"{index_dir}/chunks.jsonl")]
+            store = VectorStore.load(f"{index_dir}/vectors.pt")
+            if len(store) == len(chunks) and os.stat(cfg_path).st_mtime_ns == mtime:
+                break
+            time.sleep(1.0)
+        else:
+            raise RuntimeError(f"index in {index_dir} is inconsistent (chunks and vectors differ)")
+        self.cfg, self.chunks, self.store, self.mtime = cfg, chunks, store, mtime
+        self.live = store.live.numpy().astype(bool)
+        self.bm25 = BM25([c["text"] for c in chunks])               # deleted chunks are masked, not removed
+        self.plaid = None
+        if cfg.get("plaid"):
+            try:
+                from pylate import indexes
+                self.plaid = indexes.PLAID(index_folder=index_dir, index_name="plaid", override=False, show_progress=False)
+            except Exception:
+                RAG_EVENTS.inc(event="plaid_unavailable_exact_search")
+        self.pos = {c["id"]: n for n, c in enumerate(chunks)}
+        self.masks = {}
+        self.gpu_budget_gb = gpu_budget_gb
 
 
 class AxonRAG:
-    def __init__(self, index_dir: str, axon=None, device: str | None = None):
-        from .axon import Axon, Index
-        self.cfg = json.load(open(f"{index_dir}/config.json"))
-        self.chunks = [json.loads(line) for line in open(f"{index_dir}/chunks.jsonl")]
-        self.ax = axon or Axon(self.cfg["model"], device=device)
-        v = torch.load(f"{index_dir}/vectors.pt", map_location="cpu", weights_only=True)
-        dt = torch.float16 if self.ax.fp16 else torch.float32
-        self.index = Index([c["text"] for c in self.chunks], v["D"].to(self.ax.device, dt), v["M"].to(self.ax.device),
-                           v.get("offsets"))
-        self.bm25 = BM25([c["text"] for c in self.chunks])
-        self.plaid = None
-        if self.cfg.get("plaid"):
-            from pylate import indexes
-            self.plaid = indexes.PLAID(index_folder=index_dir, index_name="plaid", override=False, show_progress=False)
-        self._pos = {c["id"]: n for n, c in enumerate(self.chunks)}
-        self._masks = {}
+    def __init__(self, index_dir: str, axon=None, device: str | None = None, gpu_budget_gb: float = 6.0):
+        from .axon import Axon
+        self.dir = index_dir
+        cfg = json.load(open(f"{index_dir}/config.json"))
+        self.ax = axon or Axon(cfg["model"], device=device)
+        self._s = _Loaded(index_dir, gpu_budget_gb)
+
+    # the current snapshot; `refresh` swaps it in one assignment, so a request in flight keeps its own
+    cfg = property(lambda self: self._s.cfg)
+    chunks = property(lambda self: self._s.chunks)
+    store = property(lambda self: self._s.store)
+    bm25 = property(lambda self: self._s.bm25)
+    plaid = property(lambda self: self._s.plaid)
+    _pos = property(lambda self: self._s.pos)
+    _masks = property(lambda self: self._s.masks)
+
+    def refresh(self) -> bool:
+        """Reload if the index changed on disk (after `update` or `compact`); cheap when it has not."""
+        try:
+            if os.stat(f"{self.dir}/config.json").st_mtime_ns == self._s.mtime:
+                return False
+            self._s = _Loaded(self.dir, self._s.gpu_budget_gb)
+            RAG_EVENTS.inc(event="index_reloaded")
+            return True
+        except Exception:
+            RAG_EVENTS.inc(event="index_reload_failed")              # keep serving the snapshot we have
+            return False
 
     @property
     def multi_tenant(self) -> bool:
-        return any("tenant" in c for c in self.chunks)
+        return bool(self.cfg.get("multi_tenant")) or any("tenant" in c for c in self.chunks)
 
     def tenant_mask(self, tenant):
-        """Which chunks a tenant may see. In a multi-tenant index a tenant is required: there is no
-        "see everything" default."""
+        """Which chunks a query may see: live chunks, of that tenant. In a multi-tenant index a tenant
+        is required: there is no "see everything" default."""
+        import numpy as np
+        s = self._s
         if tenant is None:
             if self.multi_tenant:
                 raise PermissionError("this index is multi-tenant: a tenant is required")
-            return None
-        if tenant not in self._masks:
-            import numpy as np
-            self._masks[tenant] = np.array([c.get("tenant") == tenant for c in self.chunks], dtype=bool)
-        return self._masks[tenant]
+            return s.live
+        if tenant not in s.masks:
+            s.masks[tenant] = np.array([c.get("tenant") == tenant for c in s.chunks], dtype=bool) & s.live
+        return s.masks[tenant]
 
     def first_stage(self, q: str, depth: int = 100, approximate: bool | None = None, allowed=None) -> list[int]:
-        use_plaid = self.plaid is not None if approximate is None else approximate
+        s = self._s
+        allowed = s.live if allowed is None else allowed
+        use_plaid = s.plaid is not None if approximate is None else (approximate and s.plaid is not None)
         if use_plaid:
-            sub = None if allowed is None else [c["id"] for c, ok in zip(self.chunks, allowed) if ok]
-            res = self.plaid(self.ax.query_vectors(q)[None], k=depth, subset=sub)[0] if sub != [] else []
-            if res:
-                return [self._pos[r["id"]] for r in res]
+            restricted = not bool(allowed.all())
+            sub = [c["id"] for c, ok in zip(s.chunks, allowed) if ok] if restricted and self.multi_tenant else None
+            res = s.plaid(self.ax.query_vectors(q)[None], k=depth, subset=sub)[0] if sub != [] else []
+            ids = [s.pos[r["id"]] for r in res if r["id"] in s.pos and allowed[s.pos[r["id"]]]]
+            if ids:
+                return ids
             RAG_EVENTS.inc(event="plaid_empty_fallback_exact")          # never return nothing silently
-        return self.ax.search(q, self.index, k=depth, allowed=allowed)
+        return self.ax.search_store(q, s.store, k=depth, allowed=allowed, gpu_budget_gb=s.gpu_budget_gb)
 
     def retrieve(self, q: str, k: int = 5, depth: int = 100, rrf_k: int = 60, conditions=None,
                  method: str | None = None, approximate: bool | None = None, rerank: bool = True,
                  tenant: str | None = None) -> list[dict]:
-        """Tenant filtering happens inside both searches, before fusion and re-ranking, and every
-        result is checked again before it is returned."""
+        """Tenant and deletion filters apply inside both searches, before fusion and re-ranking, and
+        every result is checked again before it is returned."""
+        s = self._s                                                   # one snapshot for the whole request
         allowed = self.tenant_mask(tenant)
         t0 = time.perf_counter()
         fused = defaultdict(float)
-        for ranked in (self.bm25.search(q, depth, allowed=allowed), self.first_stage(q, depth, approximate, allowed)):
+        for ranked in (s.bm25.search(q, depth, allowed=allowed), self.first_stage(q, depth, approximate, allowed)):
             for r, i in enumerate(ranked, 1):
                 fused[i] += 1.0 / (rrf_k + r)
-        cand = [i for i in sorted(fused, key=fused.get, reverse=True)[:depth] if allowed is None or allowed[i]]
+        cand = [i for i in sorted(fused, key=fused.get, reverse=True)[:depth] if allowed[i]]
         t1 = time.perf_counter()
         if not cand:
             return []
         if not rerank:                                                  # ablation: fused first stage only
-            return [{**self.chunks[i], "score": fused[i], "weakest": None, "conditions": []} for i in cand[:k]]
-        results = self.ax.rerank(q, self.ax.subset(self.index, cand), top_k=k, conditions=conditions, method=method)
+            return [{**s.chunks[i], "score": fused[i], "weakest": None, "conditions": []} for i in cand[:k]]
+        sub = self.ax.store_subset(s.store, cand, [s.chunks[i]["text"] for i in cand])
+        results = self.ax.rerank(q, sub, top_k=k, conditions=conditions, method=method)
         t2 = time.perf_counter()
         RAG_STAGE.observe(t1 - t0, stage="first_stage")
         RAG_STAGE.observe(t2 - t1, stage="rerank")
         hits = []
         for r in results:
-            if allowed is not None and not allowed[cand[r.index]]:              # defence in depth
+            if not allowed[cand[r.index]]:                               # defence in depth
                 RAG_EVENTS.inc(event="tenant_filter_violation_blocked")
                 continue
-            c = self.chunks[cand[r.index]]
+            c = s.chunks[cand[r.index]]
             hits.append({**c, "score": r.score, "weakest": r.weakest,
                          "conditions": [(m.condition, m.relative, [e[2] for e in m.evidence]) for m in r.conditions]})
         return hits
@@ -346,6 +355,13 @@ def main():
     b.add_argument("--ckpt", default=None, help="legacy: a checkpoint trained with nyaya.train")
     b.add_argument("--plaid", action="store_true", help="also build a PLAID index for large collections")
     b.add_argument("--tenants", action="store_true", help="each top-level folder of --src is a separate tenant")
+    u = sub.add_parser("update", help="re-index only files that were added, changed or removed")
+    u.add_argument("--src", required=True)
+    u.add_argument("--index", required=True)
+    c = sub.add_parser("compact", help="drop deleted chunks for good (no re-encoding)")
+    c.add_argument("--index", required=True)
+    st = sub.add_parser("stats", help="what is in an index")
+    st.add_argument("--index", required=True)
     a = sub.add_parser("ask")
     a.add_argument("question")
     a.add_argument("--index", required=True)
@@ -358,10 +374,24 @@ def main():
         if args.ckpt:
             build(args.src, args.ckpt, args.out)
         else:
-            _, _, ch = build_axon(args.src, args.out, args.model, plaid=args.plaid, tenants_from_dirs=args.tenants)
-            print(f"indexed {len(ch)} chunks from {args.src}")
-            for sk in json.load(open(f"{args.out}/config.json"))["skipped"]:
+            _, rep, ch = build_axon(args.src, args.out, args.model, plaid=args.plaid, tenants_from_dirs=args.tenants,
+                                    log=print)
+            print(f"indexed {len(ch)} chunks from {args.src} in {rep['seconds']} s ({rep['vector_mb']} MB of vectors)")
+            for sk in rep["refused"]:
                 print(f"  skipped {sk['source']}: {sk['reason']}")
+        return
+    if args.cmd in ("update", "compact", "stats"):
+        from . import index as ix
+        if args.cmd == "stats":
+            cfg = ix.read_config(args.index)
+            print(json.dumps({k: cfg.get(k) for k in ("model", "version", "n", "n_live", "plaid", "multi_tenant",
+                                                       "updated", "plaid_error") if k in cfg}, indent=1))
+            return
+        if args.cmd == "compact":
+            print(json.dumps(ix.compact(args.index)))
+            return
+        from .axon import Axon
+        print(json.dumps(ix.update(args.src, args.index, Axon(ix.read_config(args.index)["model"]), log=print)))
         return
     if args.ckpt:
         hs = HybridSearch(args.index, load_retriever(args.ckpt))

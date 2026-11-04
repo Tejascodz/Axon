@@ -101,12 +101,11 @@ def test_competitive_blocks_shared_evidence():
 
 
 def test_evidence_spans_cover_matched_words():
-    from nyaya.axon import Axon, Index
+    from nyaya.axon import Axon
     text = "Linen shirt for summer, made in India."
     offs = [(0, 0), (0, 0), (0, 5), (6, 11), (12, 15), (16, 22), (22, 23), (24, 28), (29, 31), (32, 37), (37, 38), (0, 0)]
-    idx = Index([text], None, None, [offs])
     ax = Axon.__new__(Axon)
-    ev = ax._evidence(idx, 0, torch.tensor([0, 7, 8, 9]), torch.tensor([0.2, 0.9, 0.8, 0.95]),
+    ev = ax._evidence(text, offs, torch.tensor([0, 7, 8, 9]), torch.tensor([0.2, 0.9, 0.8, 0.95]),
                       torch.tensor([True, True, True, True]))
     assert ev and ev[0][2] == "made in India"          # adjacent matched tokens merge into one passage
 

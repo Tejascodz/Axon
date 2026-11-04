@@ -145,53 +145,124 @@ def test_ingestion_rejects_fake_pdfs_and_oversized_files(tmp_path, monkeypatch):
 
 
 class _FakeAxon:
-    """Stands in for the ColBERT model: scores documents by shared words, keeps the real interfaces."""
-    fp16, device = False, "cpu"
+    """Stands in for the ColBERT model with deterministic bag-of-words token vectors, keeping the real
+    interfaces (encode_store / search_store / store_subset / rerank), so the index code runs for real."""
+    fp16, device, model_name, dim = False, "cpu", "fake", 64
 
-    def _score(self, q, texts):
-        qw = set(q.lower().split())
-        return [len(qw & set(t.lower().split())) for t in texts]
+    def __init__(self):
+        self.encoded = 0                                   # documents encoded so far (update must re-encode few)
 
-    def search(self, q, index, k=100, allowed=None):
-        s = self._score(q, index.texts)
-        ids = [i for i in sorted(range(len(s)), key=lambda i: -s[i]) if allowed is None or allowed[i]]
-        return ids[:k]
+    def _vecs(self, text):
+        import re
+        import zlib
+        words = re.findall(r"[a-z0-9]+", text.lower()) or ["empty"]
+        v = torch.zeros(len(words), self.dim)
+        for i, w in enumerate(words):
+            v[i, zlib.crc32(w.encode()) % self.dim] = 1.0
+        return v
 
-    def subset(self, index, ids):
+    def encode_store(self, texts, log=None):
+        from nyaya.store import VectorStore
+        self.encoded += len(texts)
+        return VectorStore.from_docs([self._vecs(t) for t in texts], dim=self.dim)
+
+    def query_vectors(self, q):
+        return self._vecs(q).numpy()
+
+    def search_store(self, q, store, k=100, allowed=None, gpu_budget_gb=6.0):
+        return store.search(self._vecs(q), k=k, allowed=allowed)
+
+    def store_subset(self, store, ids, texts):
         from nyaya.axon import Index
-        return Index([index.texts[i] for i in ids], index.D[ids], index.M[ids], None)
+        D, M = store.padded(ids, dtype=torch.float32)
+        return Index(list(texts), D, M, None, valid_only=True)
 
     def rerank(self, q, index, top_k=None, conditions=None, method=None):
         from nyaya.axon import Result
-        s = self._score(q, index.texts)
+        qw = set(q.lower().split())
+        s = [len(qw & set(t.lower().split())) for t in index.texts]
         order = sorted(range(len(s)), key=lambda i: -s[i])[: top_k or len(s)]
         return [Result(index=i, text=index.texts[i], score=float(s[i])) for i in order]
 
 
-def _fake_rag(chunks):
-    from nyaya.axon import Index
-    from nyaya.bm25 import BM25
+def _rag(out, ax):
     from nyaya.rag import AxonRAG
-    r = AxonRAG.__new__(AxonRAG)
-    r.chunks = [{**c, "id": f"c{n}"} for n, c in enumerate(chunks)]
-    r.ax, r.plaid, r._masks = _FakeAxon(), None, {}
-    r.index = Index([c["text"] for c in chunks], torch.zeros(len(chunks), 1, 1), torch.ones(len(chunks), 1, dtype=torch.bool), None)
-    r.bm25 = BM25([c["text"] for c in chunks])
-    r._pos = {c["id"]: n for n, c in enumerate(r.chunks)}
-    return r
+    return AxonRAG(str(out), axon=ax)
 
 
-def test_tenant_isolation_inside_retrieval():
+def test_tenant_isolation_inside_retrieval(tmp_path):
     import pytest
+
+    from nyaya import index as ix
     secret = "acme salary bands for engineers 2026"
-    r = _fake_rag([{"text": secret, "tenant": "acme"}, {"text": "globex holiday calendar", "tenant": "globex"},
-                   {"text": "globex salary policy for engineers", "tenant": "globex"}])
+    ax = _FakeAxon()
+    ix.build([{"source": "a", "text": secret, "tenant": "acme"},
+              {"source": "b", "text": "globex holiday calendar", "tenant": "globex"},
+              {"source": "c", "text": "globex salary policy for engineers", "tenant": "globex"}], str(tmp_path), ax)
+    r = _rag(tmp_path, ax)
     hits = r.retrieve("salary bands for engineers", k=5, depth=10, tenant="globex")
     assert hits and all(h["tenant"] == "globex" for h in hits)          # the best match belongs to acme
     assert all(h["text"] != secret for h in hits)
     assert r.retrieve("salary", k=5, tenant="nobody") == []
     with pytest.raises(PermissionError):
         r.retrieve("salary", k=5)                                        # no "see everything" default
+
+
+def test_incremental_update_compact_and_live_reload(tmp_path):
+    import os
+
+    import pytest
+
+    from nyaya import index as ix
+    src, out = tmp_path / "docs", tmp_path / "index"
+    src.mkdir()
+    (src / "jackets.md").write_text("The trail jacket is waterproof and has a hood.")
+    (src / "boots.md").write_text("Hiking boots with a steel shank.")
+    (src / "tents.md").write_text("A two person tent for alpine camping.")
+    ax = _FakeAxon()
+    rep = ix.build(str(src), str(out), ax)
+    assert rep["chunks"] == 3 and ax.encoded == 3
+    rag = _rag(out, ax)                                                   # a running server
+    assert rag.retrieve("waterproof jacket hood", k=1)[0]["source"] == "jackets.md"
+
+    (src / "jackets.md").write_text("The trail jacket is now insulated for winter.")   # changed
+    (src / "boots.md").unlink()                                                       # removed
+    (src / "stoves.md").write_text("A compact gas stove for camping.")                # added
+    before = ax.encoded
+    up = ix.update(str(src), str(out), ax)
+    assert (up["added"], up["changed"], up["removed"], up["unchanged"]) == (1, 1, 1, 1)
+    assert ax.encoded - before == 2                                       # only the new and changed files
+    assert up["dead_chunks"] == 2 and up["live_chunks"] == 3 and up["version"] == 2
+
+    os.utime(out / "config.json", ns=(1, 2))                              # make the change visible even on coarse clocks
+    assert rag.refresh()                                                  # the server picks it up, no restart
+    texts = [h["text"] for h in rag.retrieve("hiking boots steel shank waterproof hood", k=5)]
+    assert not any("steel shank" in t or "waterproof" in t for t in texts)   # deleted and replaced text never comes back
+    assert any("gas stove" in h["text"] for h in rag.retrieve("gas stove", k=1))
+    assert ix.update(str(src), str(out), ax)["chunks_added"] == 0         # nothing changed: nothing re-encoded
+
+    c = ix.compact(str(out))
+    assert (c["chunks_before"], c["chunks_after"]) == (5, 3)
+    fresh = _rag(out, ax)
+    assert len(fresh.chunks) == 3 and fresh.store.n_live == 3
+    assert fresh.retrieve("insulated winter jacket", k=1)[0]["source"] == "jackets.md"
+
+    with ix.locked(str(out)):                                             # one writer at a time
+        with pytest.raises(RuntimeError):
+            ix.update(str(src), str(out), ax)
+
+
+def test_vector_store_matches_brute_force():
+    from nyaya.store import VectorStore
+    torch.manual_seed(0)
+    docs = [torch.nn.functional.normalize(torch.randn(int(torch.randint(1, 30, (1,))), 16), dim=-1) for _ in range(120)]
+    st = VectorStore.from_docs(docs)
+    q = torch.nn.functional.normalize(torch.randn(5, 16), dim=-1)
+    ref = torch.tensor([(q @ d.T).max(1).values.mean().item() for d in docs]).topk(10).indices.tolist()
+    for chunk in (1 << 20, 40, 3):                                        # chunking never changes the answer
+        assert st.search(q, k=10, chunk_tokens=chunk) == ref
+    st.delete([ref[0]])
+    assert ref[0] not in st.search(q, k=10)
 
 
 def test_bm25_allowed_mask():
@@ -272,3 +343,70 @@ def test_adapter_save_and_rebuild_round_trip(tmp_path):
     m3 = _Toy()
     with pytest.raises(ValueError):
         lora.load_adapter(m3, path, r=3, alpha=6)                     # wrong rank: refused, never silently wrong
+
+
+def test_valid_offsets_follow_the_token_mask():
+    """Store-backed results keep only unmasked token vectors; their evidence offsets must be the
+    same subset, in the same order, or evidence would point at the wrong words."""
+    import types
+
+    from nyaya.axon import Axon
+    text = "Linen shirt, made in India."
+    full = [(0, 0), (0, 0), (0, 5), (6, 11), (11, 12), (13, 17), (18, 20), (21, 26), (26, 27), (0, 0)]
+    keep = [True, True, True, True, False, True, True, True, False, True]          # punctuation skipped
+    ax = Axon.__new__(Axon)
+    ax._doc_offsets = lambda texts: [full]
+    model = types.SimpleNamespace(
+        tokenize=lambda texts, is_query: {"attention_mask": torch.ones(1, len(full) + 2, dtype=torch.long).index_fill_(
+                                              1, torch.tensor([len(full), len(full) + 1]), 0),
+                                          "input_ids": torch.zeros(1, len(full) + 2, dtype=torch.long)},
+        skiplist=[], skiplist_mask=lambda ids, sk: torch.tensor([keep + [True, True]]))
+    ax.backbone = types.SimpleNamespace(model=model)
+    got = ax._valid_offsets([text])[0]
+    assert got == [o for o, k in zip(full, keep) if k]
+    assert [text[a:b] for a, b in got if b > a] == ["Linen", "shirt", "made", "in", "India"]
+
+
+def test_server_request_ids_bounded_labels_backpressure_and_readiness(monkeypatch, capsys):
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from nyaya import server
+    monkeypatch.setenv("AXON_PRELOAD", "0")
+    monkeypatch.delenv("AXON_API_KEY", raising=False)
+    monkeypatch.delenv("AXON_TENANT_KEYS", raising=False)
+    monkeypatch.setattr(server, "RATE", 0)
+    cl = TestClient(server.app)
+    r = cl.get("/health", headers={"X-Request-ID": "abc-123"})
+    assert r.status_code == 200 and r.headers["x-request-id"] == "abc-123"
+    assert len(cl.get("/health", headers={"X-Request-ID": "bad id\\n"}).headers["x-request-id"]) == 32   # unsafe: replaced
+    for i in range(50):                                                        # random paths: one label, not fifty
+        cl.get(f"/random-{i}")
+    page = cl.get("/metrics").text
+    assert 'path="other"' in page and "random-7" not in page
+    monkeypatch.setattr(server, "_state", {})
+    assert cl.get("/ready").status_code == 503                                 # nothing loaded yet
+
+    gate, entered = threading.Event(), threading.Event()
+
+    class Slow:
+        def refresh(self):
+            return False
+
+        def answer(self, q, k=5, tenant=None):
+            entered.set()
+            gate.wait(5)
+            return {"answer": "x"}
+    monkeypatch.setattr(server, "pipeline", lambda: Slow())
+    monkeypatch.setattr(server, "_ask_slots", threading.BoundedSemaphore(1))
+    t = threading.Thread(target=lambda: cl.post("/ask", json={"question": "q"}))
+    t.start()
+    entered.wait(5)
+    assert cl.post("/ask", json={"question": "q"}).status_code == 503         # full: refused at once, not queued
+    gate.set()
+    t.join(5)
+    ok = cl.post("/ask", json={"question": "secret question text"})
+    assert ok.status_code == 200 and ok.json()["request_id"] == ok.headers["x-request-id"]
+    logged = capsys.readouterr().out
+    assert '"route": "/ask"' in logged and "secret question text" not in logged   # requests logged, content never
