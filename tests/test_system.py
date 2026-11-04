@@ -250,3 +250,25 @@ def test_no_citation_no_answer():
     assert r.abstained and r.answer == guards.INSUFFICIENT
     ok = guards.check_answer("Answer: Paris [c1]\nEvidence: capital [c1].", ["c1"])
     assert guards.require_citation(ok) is ok
+
+
+def test_adapter_save_and_rebuild_round_trip(tmp_path):
+    import pytest
+    from safetensors.torch import save_file
+    torch.manual_seed(0)
+    m, x = _Toy(), torch.randn(3, 8)
+    base_state = {k: v.clone() for k, v in m.state_dict().items()}
+    lora.inject(m, r=2, alpha=4, dropout=0.0)
+    for lo in (z for z in m.modules() if isinstance(z, lora.LoRALinear)):
+        torch.nn.init.normal_(lo.B)
+    path = str(tmp_path / "adapter.safetensors")
+    save_file(lora.adapter_state(m), path)
+    lora.merge(m)
+    m2 = _Toy()
+    m2.load_state_dict(base_state)
+    assert lora.load_adapter(m2, path, r=2, alpha=4) == 2
+    lora.merge(m2)
+    assert torch.allclose(m(x), m2(x), atol=1e-2)                    # adapter is stored in fp16
+    m3 = _Toy()
+    with pytest.raises(ValueError):
+        lora.load_adapter(m3, path, r=3, alpha=6)                     # wrong rank: refused, never silently wrong

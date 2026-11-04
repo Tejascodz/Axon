@@ -77,6 +77,25 @@ def merge(model: nn.Module) -> int:
     return n
 
 
+def load_adapter(model: nn.Module, path: str, r: int, alpha: float) -> int:
+    """Put a saved adapter (adapter.safetensors) back into a freshly loaded base model; every
+    adapter tensor must match a layer, so a wrong base model or rank fails loudly."""
+    from safetensors.torch import load_file
+    state = load_file(path)
+    inject(model, r=r, alpha=alpha, dropout=0.0)
+    layers = {n: m for n, m in model.named_modules() if isinstance(m, LoRALinear)}
+    if len(state) != 2 * len(layers):
+        raise ValueError(f"adapter has {len(state)} tensors, model has {len(layers)} LoRA layers")
+    with torch.no_grad():
+        for key, t in state.items():
+            name, w = key.rsplit(".", 1)
+            p = getattr(layers[name], w)
+            if p.shape != t.shape:
+                raise ValueError(f"{key}: adapter {tuple(t.shape)} vs model {tuple(p.shape)}")
+            p.copy_(t.float())
+    return len(layers)
+
+
 def adapter_state(model: nn.Module) -> dict:
     return {f"{n}.{w}": getattr(m, w).detach().half().cpu().contiguous()
             for n, m in model.named_modules() if isinstance(m, LoRALinear) for w in ("A", "B")}
@@ -183,7 +202,8 @@ def train(model, tok, examples, out_dir=None, lr=1e-4, epochs=1, accum=8, r=16, 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
-    ap.add_argument("--data", required=True)
+    ap.add_argument("--data", default=None, help="training data (jsonl); not needed with --apply_adapter")
+    ap.add_argument("--apply_adapter", default=None, help="rebuild a merged model from a saved adapter, no training")
     ap.add_argument("--out", required=True, help="merged checkpoint directory")
     ap.add_argument("--adapter_out", default=None, help="where to keep the adapter and report (small)")
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -198,6 +218,16 @@ def main():
     tok = AutoTokenizer.from_pretrained(a.model)
     model = AutoModelForCausalLM.from_pretrained(a.model, attn_implementation="sdpa",
                                                  **dtype_kw(torch.float16 if dev == "cuda" else torch.float32)).to(dev)
+    if a.apply_adapter:
+        n = load_adapter(model, a.apply_adapter, r=a.r, alpha=2.0 * a.r)
+        merge(model)
+        model.config.use_cache = True
+        model.save_pretrained(a.out, safe_serialization=True)
+        tok.save_pretrained(a.out)
+        print(json.dumps({"rebuilt_from": a.apply_adapter, "lora_layers": n}), flush=True)
+        return
+    if not a.data:
+        ap.error("--data is required unless --apply_adapter is given")
     examples = [json.loads(line) for line in open(a.data)]
     rep = train(model, tok, examples, out_dir=a.adapter_out or a.out, lr=a.lr, epochs=a.epochs, accum=a.accum,
                 r=a.r, alpha=2.0 * a.r, max_len=a.max_len, max_minutes=a.max_minutes,

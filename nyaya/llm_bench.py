@@ -71,7 +71,9 @@ class GpuSampler:
     def __enter__(self):
         if self.gpu is None or not shutil.which("nvidia-smi"):
             return self
-        self._p = subprocess.Popen(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits",
+        # clock and temperature too: a hot T4 lowers its clock, which changes latency between runs
+        self._p = subprocess.Popen(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,clocks.sm,temperature.gpu,power.draw",
+                                    "--format=csv,noheader,nounits",
                                     "-i", str(self.gpu), "-lms", str(self.interval)], stdout=subprocess.PIPE, text=True)
         self._t = threading.Thread(target=self._read, daemon=True)
         self._t.start()
@@ -80,8 +82,9 @@ class GpuSampler:
     def _read(self):
         for line in self._p.stdout:
             try:
-                u, m = (float(x) for x in line.strip().split(","))
-                self.samples.append((u, m))
+                vals = [float(x) for x in line.strip().split(",")]
+                if len(vals) == 5:
+                    self.samples.append(vals)
             except ValueError:
                 pass
 
@@ -93,8 +96,10 @@ class GpuSampler:
     def summary(self):
         if not self.samples:
             return {}
-        return {"gpu_util_mean_pct": round(_mean([u for u, _ in self.samples]), 1),
-                "gpu_mem_peak_mib": max(m for _, m in self.samples)}
+        col = list(zip(*self.samples))
+        return {"gpu_util_mean_pct": round(_mean(col[0]), 1), "gpu_mem_peak_mib": max(col[1]),
+                "gpu_sm_clock_mean_mhz": round(_mean(col[2])), "gpu_temp_max_c": max(col[3]),
+                "gpu_power_mean_w": round(_mean(col[4]), 1)}
 
 
 def run_level(base, model, work, concurrency, max_tokens=128, ignore_eos=True, gpu=None):

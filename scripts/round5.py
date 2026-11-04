@@ -2,6 +2,12 @@
 
   python scripts/round5.py
   python scripts/round5.py --summary_only
+  python scripts/round5.py --rebench      # with an earlier run's results/: serving benchmarks only
+
+--rebench keeps every answer and training result, moves the earlier benchmarks to *_run1.json,
+rebuilds the fine-tuned model from its saved adapter, and measures serving again: vLLM (base
+and fine-tuned) and SGLang, back to back under the same conditions, with GPU clock and
+temperature recorded. The transformers baseline is kept from the earlier run.
 
 Every step writes its output file when it finishes, and a re-run skips steps whose output exists,
 so a run can be continued from an earlier run's results/ folder (copy it in first).
@@ -218,6 +224,34 @@ def start_vllm(model_path, served, gpu, port=8000):
 SGLANG_ATTEMPTS = [[], ["--attention-backend", "triton"], ["--attention-backend", "triton", "--disable-cuda-graph"]]
 
 
+def cuda_link_env():
+    """On a T4, SGLang compiles some GPU kernels on first start, and that build links against
+    libcuda.so. Many machines (Kaggle included) ship only the driver's libcuda.so.1, so the link
+    fails with "cannot find -lcuda". A private folder with a libcuda.so link fixes the build
+    without touching system files."""
+    import glob
+    d = "/tmp/cuda_link"
+    link = f"{d}/libcuda.so"
+    if not os.path.exists(link):
+        cands = []
+        try:
+            out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True, timeout=30).stdout
+            cands += [ln.split("=>")[-1].strip() for ln in out.splitlines() if "libcuda.so" in ln]
+        except Exception:
+            pass
+        for pat in ("/usr/lib/x86_64-linux-gnu/libcuda.so*", "/usr/local/nvidia/lib64/libcuda.so*", "/usr/lib64/libcuda.so*",
+                    "/usr/local/cuda/lib64/stubs/libcuda.so", "/usr/local/cuda/compat/libcuda.so*"):
+            cands += sorted(glob.glob(pat))
+        found = next((c for c in cands if os.path.exists(c)), None)
+        if not found:
+            status("cuda_link", ok=False, info="no libcuda.so found")
+            return {}
+        os.makedirs(d, exist_ok=True)
+        os.symlink(os.path.realpath(found), link)
+        status("cuda_link", ok=True, info=os.path.realpath(found))
+    return {"LIBRARY_PATH": d + (":" + os.environ["LIBRARY_PATH"] if os.environ.get("LIBRARY_PATH") else "")}
+
+
 def start_sglang(py, model_path, served, gpu, port=30000):
     base = f"http://127.0.0.1:{port}/v1"
     for flags in SGLANG_ATTEMPTS:
@@ -225,7 +259,7 @@ def start_sglang(py, model_path, served, gpu, port=30000):
                "--host", "127.0.0.1", "--port", str(port), "--dtype", "half", "--context-length", "4096",
                "--mem-fraction-static", "0.85", "--max-running-requests", "32", "--enable-metrics", *flags]
         log(f"starting SGLang {' '.join(flags)} for {served}")
-        s = Server(cmd, gpu_env(gpu), f"sglang_{served}", base)
+        s = Server(cmd, {**gpu_env(gpu), **cuda_link_env()}, f"sglang_{served}", base)
         if s.ready(served, timeout=READY_TIMEOUT):
             r = subprocess.run([py, "-c", "import sglang; print(sglang.__version__)"], capture_output=True, text=True)
             status(f"sglang_{served}", ok=True, version=r.stdout.strip(), flags=flags)
@@ -270,6 +304,12 @@ def lane_retrieval_and_training(a, gpu, ev_retrieval, ev_train):
         if a.skip_train or ft_done:
             if ft_done:
                 log("fine-tuned model results already present; not training again")
+                adapter = "results/r5_lora/adapter.safetensors"
+                if (a.rebench and not os.path.exists("results/r5_bench_vllm_ft.json")
+                        and not os.path.exists(f"{FT_DIR}/config.json") and os.path.exists(adapter)):
+                    step("rebuild_ft", [PY, "-m", "nyaya.lora", "--model", a.llm, "--apply_adapter", adapter,
+                                        "--out", FT_DIR], "r5_rebuild_ft", gpu, timeout=3600,
+                         done_file=f"{FT_DIR}/config.json")
             return
         if step("traindata", [PY, "scripts/r5_steps.py", "traindata", *a.size_train], "r5_traindata",
                 timeout=3600, done_file="data/r5_train.jsonl"):
@@ -336,7 +376,7 @@ def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env=None
         else:
             log("SGLang not available on this machine; vLLM results stand alone")
     ev_train.wait()
-    if os.path.exists("results/r5_gen_ft.json"):
+    if os.path.exists("results/r5_gen_ft.json") and (os.path.exists("results/r5_bench_vllm_ft.json") or a.no_vllm):
         return
     if not os.path.exists(f"{FT_DIR}/config.json"):
         log("no fine-tuned model; skipping its evaluation")
@@ -484,19 +524,25 @@ def summary():
             continue
         if not header:
             header = True
+            rerun = os.path.exists(f"{ROOT}/results/r5_bench_vllm_run1.json")
             L += ["## Q9 Serving (T4, fp16, Qwen3-4B-Instruct-2507, ~1,100-token RAG prompts, 128-token outputs)", "",
                   "Every request uses a prompt not sent before in that benchmark, so prefix caching helps only with the "
-                  "shared system prompt. The base-model benchmarks ran on GPU 0 while GPU 1 was fine-tuning.", ""]
+                  "shared system prompt. " +
+                  ("vLLM and SGLang were measured back to back in a separate serving-only run, with nothing running on "
+                   "the other GPU (the transformers baseline is from the first run, measured while GPU 1 was "
+                   "fine-tuning); the first run's figures are kept in results/r5_bench_*_run1.json."
+                   if rerun else "The base-model benchmarks ran on GPU 0 while GPU 1 was fine-tuning."), ""]
         ver = st.get("vllm_ft" if tag == "vllm_ft" else "vllm_base", {}).get("version", "") if tag.startswith("vllm") else \
             st.get("sglang_base", {}).get("version", "") if tag == "sglang" else ""
         note = "" if all(r.get("fixed_length", True) for r in b["rows"]) else ", outputs not fixed-length"
         L += [f"**{title}**" + (f" ({ver}{note})" if ver or note else ""), "",
-              "| Concurrency | TTFT p50 / p99 ms | ITL p50 / p99 ms | TPOT ms | e2e p50 ms | requests/s | output tokens/s | GPU memory MiB | GPU util % | failed |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
+              "| Concurrency | TTFT p50 / p99 ms | ITL p50 / p99 ms | TPOT ms | e2e p50 ms | requests/s | output tokens/s | GPU memory MiB | GPU util % | SM clock MHz | max temp °C | failed |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for r in b["rows"]:
             L.append(f"| {r['concurrency']} | {r['ttft_ms_p50']} / {r['ttft_ms_p99']} | {r['itl_ms_p50']} / {r['itl_ms_p99']} | "
                      f"{r['tpot_ms_mean']} | {r['e2e_ms_p50']} | {r['requests_per_s']} | {r['output_tokens_per_s']} | "
-                     f"{r.get('gpu_mem_peak_mib', '–')} | {r.get('gpu_util_mean_pct', '–')} | {r['failed']} |")
+                     f"{r.get('gpu_mem_peak_mib', '–')} | {r.get('gpu_util_mean_pct', '–')} | {r.get('gpu_sm_clock_mean_mhz', '–')} | "
+                     f"{r.get('gpu_temp_max_c', '–')} | {r['failed']} |")
         srv = [(k, v) for r in b["rows"][-1:] for k, v in r["server"].items()
                if any(s in k for s in ("time_to_first_token", "inter_token", "time_per_output", "e2e_request", "prefix_cache"))]
         if srv:
@@ -587,7 +633,7 @@ def summary():
               f"({lr['skipped_too_long']} too long), {lr['steps']}/{lr['planned_steps']} steps in {lr['minutes']:.0f} min, "
               f"{lr['trainable_params'] / 1e6:.1f} M trainable parameters; loss {lr['first_loss']:.3f} → {lr['last_loss']:.3f}; "
               f"{lr['non_finite_losses']} non-finite losses skipped."]
-    bad = [k for k, v in st.items() if isinstance(v, dict) and v.get("ok") is False]
+    bad = [k for k, v in st.items() if isinstance(v, dict) and v.get("ok") is False and not k.endswith("_run1")]
     L += ["", f"Steps that failed: {', '.join(bad)} (see logs/)." if bad else "All steps succeeded.", ""]
     txt = "\n".join(L) + "\n"
     open(f"{ROOT}/results/ROUND5.md", "w").write(txt)
@@ -622,6 +668,7 @@ def main():
     ap.add_argument("--no_vllm", action="store_true", help="serve with nyaya.hf_server only")
     ap.add_argument("--skip_train", action="store_true")
     ap.add_argument("--no_sglang", action="store_true", help="skip the SGLang comparison")
+    ap.add_argument("--rebench", action="store_true", help="serving benchmarks again, reusing every other result")
     ap.add_argument("--train_minutes", type=float, default=100)
     ap.add_argument("--hf_limit", type=int, default=100, help="test items per arm when only the slow server is available")
     ap.add_argument("--smoke", action="store_true", help="tiny sizes for a local check")
@@ -634,6 +681,17 @@ def main():
     if a.summary_only:
         print(summary())
         return
+    if a.rebench:
+        if not os.path.exists("results/r5_gen_ft.json"):
+            raise SystemExit("--rebench needs an earlier run's results/ folder (copy it in first)")
+        for tag in ("vllm", "vllm_ft", "sglang"):
+            old, keep = f"results/r5_bench_{tag}.json", f"results/r5_bench_{tag}_run1.json"
+            if os.path.exists(old) and not os.path.exists(keep):
+                os.replace(old, keep)
+        st = status()
+        if "sglang_base" in st:                    # the earlier failed attempt is history, not this run's result
+            st["sglang_base_run1"] = st.pop("sglang_base")
+            json.dump(st, open(STATUS, "w"), indent=1)
     a.size_retrieve = (["--n_answer", "12", "--n_unanswerable", "6", "--n_injection", "10", "--n_condition", "10",
                         "--n_calib", "6"] if a.smoke else [])
     a.size_train = ["--n_train", "16"] if a.smoke else []
