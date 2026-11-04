@@ -429,6 +429,8 @@ def main():
     ap.add_argument("--data", default=os.path.join(ROOT, "data"))
     ap.add_argument("--work", default=None)
     ap.add_argument("--no_plaid", action="store_true")
+    ap.add_argument("--max_build_minutes", type=float, default=90,
+                    help="the large size is reduced if the small build predicts a longer build than this")
     ap.add_argument("--skip", nargs="*", default=[], help="parts to skip: evidence scale update deps")
     ap.add_argument("--summary_only", action="store_true")
     ap.add_argument("--encode_sample", default=None)
@@ -471,10 +473,11 @@ def main():
                 save("update", part_update(a, ax, paras, evals, small, out_dir, res["build_seconds"]))
             shutil.rmtree(out_dir, ignore_errors=True)
         b100 = json.load(open(OUT))[key]["build_seconds"]
-        budget = 5400                                               # 90 minutes for the large build
+        budget = a.max_build_minutes * 60
         fit = int(small * budget / max(b100, 1))
         if fit < large and not a.smoke:
-            save("size_note", f"Large size reduced from {large:,} to {fit:,}: the {small:,} build took {b100 / 60:.0f} min.")
+            save("size_note", f"Large size reduced from {large:,} to {fit:,}: the {small:,} build took {b100 / 60:.0f} min "
+                              f"(limit {a.max_build_minutes:g} min).")
             large = max(small, fit // 10_000 * 10_000)
         large = min(large, len(paras) - 400)
         if large > small and not done(f"scale_{large}"):

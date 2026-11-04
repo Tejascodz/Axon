@@ -214,7 +214,7 @@ def _plaid(out, name, override):
     return indexes.PLAID(index_folder=out, index_name=name, override=override, show_progress=False)
 
 
-def _plaid_add(pl, chunks, store, positions, shuffle=False):
+def _plaid_add(pl, chunks, store, positions, shuffle=False, log=None):
     """Hand documents to PLAID in batches: it wants float32 arrays, so all at once would need a
     float32 copy of every vector in memory. PLAID learns its centroids from the first batch, so for
     a new index the order is shuffled (fixed seed): the first batch is a sample of the whole
@@ -225,8 +225,11 @@ def _plaid_add(pl, chunks, store, positions, shuffle=False):
         random.Random(0).shuffle(positions)
     for i in range(0, len(positions), PLAID_BATCH):
         part = positions[i:i + PLAID_BATCH]
+        t = time.time()
         pl.add_documents(documents_ids=[chunks[j]["id"] for j in part],
                          documents_embeddings=[store.doc(j).float().numpy() for j in part])
+        if log:
+            log(f"PLAID: {min(i + PLAID_BATCH, len(positions))}/{len(positions)} documents ({time.time() - t:.0f} s for this batch)")
 
 
 def _mark_plaid(out, name, version):
@@ -236,12 +239,12 @@ def _mark_plaid(out, name, version):
     os.replace(tmp, os.path.join(out, f"{name}.version"))
 
 
-def _plaid_build(out, cfg, chunks, store):
+def _plaid_build(out, cfg, chunks, store, log=None):
     """A fresh PLAID index under a new name (the one a running server uses is left alone)."""
     name = f"plaid.v{cfg['version']}"
     try:
         _plaid_add(_plaid(out, name, override=True), chunks, store,
-                   [i for i in range(len(chunks)) if bool(store.live[i])], shuffle=True)
+                   [i for i in range(len(chunks)) if bool(store.live[i])], shuffle=True, log=log)
         _mark_plaid(out, name, cfg["version"])
         cfg.update(plaid=True, plaid_dir=name)
         cfg.pop("plaid_error", None)
@@ -286,7 +289,7 @@ def build(src_or_chunks, out: str, axon, plaid: bool = False, tenants_from_dirs:
         if old.get("files"):
             cfg["files"] = old["files"]                               # becomes previous_files at commit
         if plaid:
-            _plaid_build(out, cfg, chunks, store)
+            _plaid_build(out, cfg, chunks, store, log=log)
         previous_plaid = plaid_dir(old) if old.get("plaid") else None
         _commit(out, cfg, chunks, store, manifest, data_name, previous_plaid)
     return {"chunks": len(chunks), "refused": refused, "seconds": round(time.time() - t0, 2),
