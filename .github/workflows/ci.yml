@@ -13,7 +13,7 @@ jobs:
       - name: Install
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy pytest pyflakes fastapi httpx
+          pip install numpy pytest pyflakes fastapi httpx safetensors
       - name: Lint
         run: python -m pyflakes nyaya scripts tests
       - name: Test
