@@ -176,6 +176,8 @@ def make_env(env_dir, specs, module, logname, python=None):
     r = subprocess.run([py, "-c", f"import {module}, torch; print({module}.__version__, torch.__version__, torch.version.cuda)"],
                        capture_output=True, text=True)
     status(f"{logname}_{os.path.basename(env_dir)}", ok=r.returncode == 0, info=(r.stdout or r.stderr)[-300:])
+    if r.returncode == 0:
+        freeze_env(py, os.path.basename(env_dir))
     return py if r.returncode == 0 else None
 
 
@@ -353,6 +355,30 @@ def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env=None
                            "--levels", "1,16", "--gpu", str(gpu)], "r5_bench_vllm_ft", timeout=3600,
          done_file="results/r5_bench_vllm_ft.json")
     s.stop()
+
+
+def record_environment():
+    """What a later reader needs to reproduce the numbers: GPU and driver, Python, every installed
+    package, and the exact model revisions downloaded (the snapshot hash is part of each path)."""
+    env = {"python": sys.version.split()[0], "cuda_device_order": os.environ.get("CUDA_DEVICE_ORDER")}
+    try:
+        env["gpus"] = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+                                     capture_output=True, text=True, timeout=30).stdout.strip().splitlines()
+    except Exception:
+        env["gpus"] = []
+    if os.path.exists("data/prep_status.json"):
+        env["downloads"] = json.load(open("data/prep_status.json"))
+    if os.path.isdir("data/MultiConIR/.git"):                       # exact benchmark version
+        env["multiconir_commit"] = subprocess.run(["git", "-C", "data/MultiConIR", "rev-parse", "HEAD"],
+                                                  capture_output=True, text=True).stdout.strip()
+    json.dump(env, open("results/r5_environment.json", "w"), indent=1)
+    with open("results/r5_pip_freeze.txt", "w") as f:
+        subprocess.run([PY, "-m", "pip", "freeze"], stdout=f, stderr=subprocess.DEVNULL)
+
+
+def freeze_env(py, name):
+    with open(f"results/r5_pip_freeze_{name}.txt", "w") as f:
+        subprocess.run([PY, "-m", "uv", "pip", "freeze", "--python", py], stdout=f, stderr=subprocess.DEVNULL)
 
 
 def hf_generate(a, s, tag, model=None):
@@ -621,6 +647,7 @@ def main():
            "r5_prep")
     else:
         sh([PY, "scripts/prep_data.py", "--data", "data", "--only", "multiconir"], "r5_prep")
+    record_environment()
     ev_r, ev_t, ev_v = threading.Event(), threading.Event(), threading.Event()
 
     ev_s = threading.Event()
