@@ -1,4 +1,4 @@
-"""Round 5: the whole RAG system, served and measured. Kaggle T4 x2, about 3-4 h, unattended.
+"""Round 5: the whole RAG system, served and measured. Kaggle T4 x2, about 4.5 h, unattended.
 
   python scripts/round5.py
   python scripts/round5.py --summary_only
@@ -16,7 +16,7 @@ Fixed before running (no other settings are tried):
   Q9   Serving: time to first token, inter-token latency, time per output token and throughput at
        concurrency 1/4/16/32 (vLLM and SGLang, same GPU, model and prompts) and 1/4 (transformers
        baseline), fixed 128-token outputs.
-  Q10  End-to-end answers on 500 HotpotQA questions retrieved from a ~5,000-paragraph corpus:
+  Q10  End-to-end answers on 500 HotpotQA questions retrieved from a ~7,000-paragraph corpus:
        exact match, F1, citation precision/recall; abstention on 200 questions whose gold
        paragraphs are withheld (should answer INSUFFICIENT) and false abstention on the 500.
   Q11  Prompt injection, 200 questions, 8 attack templates (incl. system-prompt exfiltration and
@@ -51,7 +51,9 @@ LLM = "Qwen/Qwen3-4B-Instruct-2507"
 RETRIEVER = "lightonai/LateOn"
 FT_DIR = "/tmp/r5_ft"
 STATUS = "results/r5_status.json"
-VLLM_ATTEMPTS = [(None, []), (None, ["--enforce-eager"]), ("0.11.0", []), ("0.11.0", ["--enforce-eager"])]
+VLLM_PIN = "0.33.0"                 # the release that ran on Kaggle T4s in round 5; others are fallbacks
+VLLM_ATTEMPTS = [(VLLM_PIN, []), (None, []), (VLLM_PIN, ["--enforce-eager"]), ("0.11.0", ["--enforce-eager"])]
+READY_TIMEOUT = 1200                # seconds a server may take to load the model and answer once
 _lock = threading.Lock()
 
 
@@ -202,8 +204,9 @@ def start_vllm(model_path, served, gpu, port=8000):
                "--gpu-memory-utilization", "0.90", "--max-num-seqs", "32", *flags]
         log(f"starting vLLM {version or 'latest'} {' '.join(flags)} for {served}")
         s = Server(cmd, gpu_env(gpu), f"vllm_{served.replace('/', '_')}", base)
-        if s.ready(served, timeout=1500):
-            status(f"vllm_{served}", ok=True, version=version or "latest", flags=flags)
+        if s.ready(served, timeout=READY_TIMEOUT):
+            r = subprocess.run([py, "-c", "import vllm; print(vllm.__version__)"], capture_output=True, text=True)
+            status(f"vllm_{served}", ok=True, version=r.stdout.strip() or version or "latest", flags=flags)
             return s
         s.stop()
         status(f"vllm_{served}", ok=False, tried=f"{version or 'latest'} {flags}")
@@ -221,7 +224,7 @@ def start_sglang(py, model_path, served, gpu, port=30000):
                "--mem-fraction-static", "0.85", "--max-running-requests", "32", "--enable-metrics", *flags]
         log(f"starting SGLang {' '.join(flags)} for {served}")
         s = Server(cmd, gpu_env(gpu), f"sglang_{served}", base)
-        if s.ready(served, timeout=1500):
+        if s.ready(served, timeout=READY_TIMEOUT):
             r = subprocess.run([py, "-c", "import sglang; print(sglang.__version__)"], capture_output=True, text=True)
             status(f"sglang_{served}", ok=True, version=r.stdout.strip(), flags=flags)
             return s
@@ -233,7 +236,7 @@ def start_sglang(py, model_path, served, gpu, port=30000):
 def start_hf(model_path, served, gpu, port=8100):
     s = Server([PY, "-m", "nyaya.hf_server", "--model", model_path, "--port", str(port)], gpu_env(gpu),
                f"hf_{served.replace('/', '_')}", f"http://127.0.0.1:{port}/v1")
-    if s.ready(served, timeout=1500):
+    if s.ready(served, timeout=READY_TIMEOUT):
         return s
     s.stop()
     return None
@@ -260,7 +263,7 @@ def lane_retrieval_and_training(a, gpu, ev_retrieval, ev_train):
              "r5_retrieve", gpu, timeout=3 * 3600, done_file="results/r5_prompts.json")
     finally:
         ev_retrieval.set()
-    ft_done = all(os.path.exists(f) for f in ("results/r5_gen_ft.json", "results/r5_bench_vllm_ft.json"))
+    ft_done = os.path.exists("results/r5_gen_ft.json")         # the fine-tuned model's answers are what matter
     try:
         if a.skip_train or ft_done:
             if ft_done:
@@ -280,29 +283,30 @@ def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env=None
     if not os.path.exists("results/r5_prompts.json"):
         log("no prompts: retrieval failed, nothing to serve")
         return
-    # transformers baseline
-    if not os.path.exists("results/r5_bench_hf.json"):
+    # transformers baseline (and, if vLLM is unavailable, the slow fallback for every test)
+    need_hf = not os.path.exists("results/r5_bench_hf.json") or (a.no_vllm and not os.path.exists("results/r5_gen_base.json"))
+    if need_hf:
         s = start_hf(a.llm, a.llm, gpu)
         if s:
             step("bench_hf", [PY, "scripts/r5_steps.py", "bench", "--base", s.base, "--model", a.llm, "--tag", "hf",
                               "--levels", "1,4", "--requests", "8", "--gpu", str(gpu)], "r5_bench_hf",
                  timeout=3600, done_file="results/r5_bench_hf.json")
             if a.no_vllm:
-                step("generate_base", [PY, "scripts/r5_steps.py", "generate", "--base", s.base, "--model", a.llm,
-                                       "--tag", "base", "--concurrency", "2", "--limit", str(a.hf_limit)],
-                     "r5_gen_base", timeout=4 * 3600, done_file="results/r5_gen_base.json")
+                hf_generate(a, s, "base")
             s.stop()
+        else:
+            log("the transformers server did not start (see logs/hf_*.log)")
     if a.no_vllm:
         ev_train.wait()
-        if os.path.exists(f"{FT_DIR}/config.json"):
+        if os.path.exists(f"{FT_DIR}/config.json") and not os.path.exists("results/r5_gen_ft.json"):
             s = start_hf(FT_DIR, FT_DIR, gpu)
             if s:
-                step("generate_ft", [PY, "scripts/r5_steps.py", "generate", "--base", s.base, "--model", FT_DIR,
-                                     "--tag", "ft", "--concurrency", "2", "--limit", str(a.hf_limit)],
-                     "r5_gen_ft", timeout=4 * 3600, done_file="results/r5_gen_ft.json")
+                hf_generate(a, s, "ft", model=FT_DIR)
                 s.stop()
         return
     ev_vllm_env.wait()
+    if ev_sglang_env is not None:                 # benchmark only once no install competes for the CPU
+        ev_sglang_env.wait(timeout=2400)
     served = "base"
     base_done = all(os.path.exists(f) for f in ("results/r5_bench_vllm.json", "results/r5_gen_base.json"))
     s = None if base_done else start_vllm(a.llm, served, gpu)       # a re-run with earlier results skips this
@@ -330,13 +334,18 @@ def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env=None
         else:
             log("SGLang not available on this machine; vLLM results stand alone")
     ev_train.wait()
-    if all(os.path.exists(f) for f in ("results/r5_gen_ft.json", "results/r5_bench_vllm_ft.json")):
+    if os.path.exists("results/r5_gen_ft.json"):
         return
     if not os.path.exists(f"{FT_DIR}/config.json"):
         log("no fine-tuned model; skipping its evaluation")
         return
     s = start_vllm(FT_DIR, "ft", gpu)
     if s is None:
+        log("vLLM did not start for the fine-tuned model; using the transformers server (smaller test sets)")
+        s = start_hf(FT_DIR, FT_DIR, gpu)
+        if s:
+            hf_generate(a, s, "ft", model=FT_DIR)
+            s.stop()
         return
     step("generate_ft", [PY, "scripts/r5_steps.py", "generate", "--base", s.base, "--model", "ft", "--tag", "ft"],
          "r5_gen_ft", timeout=4 * 3600, done_file="results/r5_gen_ft.json")
@@ -344,6 +353,12 @@ def lane_serving(a, gpu, ev_retrieval, ev_train, ev_vllm_env, ev_sglang_env=None
                            "--levels", "1,16", "--gpu", str(gpu)], "r5_bench_vllm_ft", timeout=3600,
          done_file="results/r5_bench_vllm_ft.json")
     s.stop()
+
+
+def hf_generate(a, s, tag, model=None):
+    step(f"generate_{tag}", [PY, "scripts/r5_steps.py", "generate", "--base", s.base, "--model", model or a.llm,
+                             "--tag", tag, "--concurrency", "2", "--limit", str(a.hf_limit)],
+         f"r5_gen_{tag}", timeout=4 * 3600, done_file=f"results/r5_gen_{tag}.json")
 
 
 # --------------------------------------------------------------------------- summary
@@ -396,7 +411,8 @@ def answer_stats(g):
             "well-formed replies": _boot([float(r["well_formed"]) for r in A + U]),
             "answer found in its cited sources": _boot([r.get("grounded") for r in A]),
             "answered without any valid citation": _boot([r.get("unsupported") for r in A]),
-            "invalid citations removed (per reply)": _boot([r["invalid_citations"] for r in A + U])}
+            "invalid citations removed (per reply)": _boot([r["invalid_citations"] for r in A + U]),
+            "replies cut off at the token limit": _boot([float(r.get("truncated", False)) for r in A + U])}
 
 
 def summary():
@@ -434,14 +450,18 @@ def summary():
         if rt.get("plaid_error"):
             L.append(f"| PLAID | not built: {rt['plaid_error'][:120]} |")
         L.append("")
+    header = False
     for tag, title in (("hf", "transformers server, one request at a time"), ("vllm", "vLLM"), ("sglang", "SGLang"),
                        ("vllm_ft", "vLLM, fine-tuned model")):
         b = _load(f"r5_bench_{tag}")
         if not b:
             continue
-        if tag == "hf":
-            L += ["## Q9 Serving (T4, fp16, Qwen3-4B-Instruct-2507, ~1,100-token RAG prompts, 128-token outputs)", ""]
-        ver = st.get("vllm_base", {}).get("version", "") if tag.startswith("vllm") else \
+        if not header:
+            header = True
+            L += ["## Q9 Serving (T4, fp16, Qwen3-4B-Instruct-2507, ~1,100-token RAG prompts, 128-token outputs)", "",
+                  "Every request uses a prompt not sent before in that benchmark, so prefix caching helps only with the "
+                  "shared system prompt. The base-model benchmarks ran on GPU 0 while GPU 1 was fine-tuning.", ""]
+        ver = st.get("vllm_ft" if tag == "vllm_ft" else "vllm_base", {}).get("version", "") if tag.startswith("vllm") else \
             st.get("sglang_base", {}).get("version", "") if tag == "sglang" else ""
         note = "" if all(r.get("fixed_length", True) for r in b["rows"]) else ", outputs not fixed-length"
         L += [f"**{title}**" + (f" ({ver}{note})" if ver or note else ""), "",
@@ -474,7 +494,11 @@ def summary():
                 d = _fmt(_paired([float(r["abstained"]) for r in ft["arms"]["unanswerable"]],
                                  [float(r["abstained"]) for r in base["arms"]["unanswerable"]]), pct=True)
             L.append(f"| {k} | {_fmt(v)} | {_fmt(sf.get(k)) if ft else '–'} | {d} |")
-        L += ["", "**With the no-citation-no-answer rule.** The rule was added after round 5, so it is reported "
+        for tag2, g in (("base", base), ("fine-tuned", ft)):
+            if g and (g.get("errors") or 0):
+                L.append(f"\n{tag2}: {g['errors']} requests failed after 3 attempts ({g.get('errors_by_arm', {})}); "
+                         "they count as wrong answers.")
+        L += ["", "**With the no-citation-no-answer rule.** The rule was added after the first round 5 run, so it is reported "
                   "separately, not in place of the pre-registered results. It is applied to the same replies, "
                   "and any answer that cites no source counts as a refusal.", "",
               "| Measure | base | fine-tuned | fine-tuned − base (paired) |", "|---|---|---|---|"]
@@ -577,6 +601,8 @@ def main():
     ap.add_argument("--smoke", action="store_true", help="tiny sizes for a local check")
     a = ap.parse_args()
     os.chdir(ROOT)
+    # number GPUs the same way in CUDA and nvidia-smi, so GPU memory is read from the right card
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     for d in ("results", "logs", "data"):
         os.makedirs(d, exist_ok=True)
     if a.summary_only:
@@ -603,7 +629,7 @@ def main():
     def install():
         try:
             if not a.no_vllm:
-                vllm_python(None)
+                vllm_python(VLLM_PIN)
         finally:
             ev_v.set()
         try:

@@ -128,7 +128,8 @@ def run_level(base, model, work, concurrency, max_tokens=128, ignore_eos=True, g
            "prompt_tokens_per_s": round(in_tok / wall, 1), "mean_prompt_tokens": round(in_tok / max(1, len(ok)), 1),
            "mean_output_tokens": round(out_tok / max(1, len(ok)), 1),
            "tokens_per_chunk": round(out_tok / max(1, sum(r["chunks"] for r in ok)), 2)}
-    row["fixed_length"] = ignore_eos
+    # fixed-length only if the server really produced max_tokens every time (some accept ignore_eos and ignore it)
+    row["fixed_length"] = bool(ok) and ignore_eos and min((r["completion_tokens"] or 0) for r in ok) >= max_tokens
     row.update(g.summary())
     row["server"] = {k: round(v, 5) for k, v in server_side(before, after).items()}
     if len(ok) < len(res):

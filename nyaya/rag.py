@@ -372,6 +372,8 @@ def main():
             print("\n" + answer(args.question, hits))
         return
     rag = AxonRAG(args.index)
+    if rag.multi_tenant and not args.tenant:
+        raise SystemExit("this index is multi-tenant: pass --tenant <name>")
     if args.no_llm:
         for h in rag.retrieve(args.question, k=args.k, tenant=args.tenant):
             print(f"[{h['id']}] {h.get('source', '')}: {h['text'][:160]}...")

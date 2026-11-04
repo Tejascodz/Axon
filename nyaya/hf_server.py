@@ -41,7 +41,7 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     model: str | None = None
     messages: list[Message] = Field(min_length=1, max_length=64)
-    max_tokens: int | None = Field(default=256, ge=1, le=4096)
+    max_tokens: int = Field(default=256, ge=1, le=4096)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     stream: bool = False
     ignore_eos: bool = False
@@ -148,7 +148,7 @@ def completions(req: ChatRequest):
                     usage = p
                 else:
                     yield chunk({"content": p})
-            yield chunk({}, finish="stop")
+            yield chunk({}, finish="length" if usage and usage["completion_tokens"] >= req.max_tokens else "stop")
             if usage and (req.stream_options or {}).get("include_usage"):
                 yield chunk({}, usage=usage)
             yield "data: [DONE]\n\n"
@@ -161,7 +161,8 @@ def completions(req: ChatRequest):
             parts.append(p)
     return {"id": rid, "object": "chat.completion", "created": created, "model": STATE["name"],
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "".join(parts)},
-                         "finish_reason": "stop"}], "usage": usage}
+                         "finish_reason": "length" if usage.get("completion_tokens", 0) >= req.max_tokens else "stop"}],
+            "usage": usage}
 
 
 def main():

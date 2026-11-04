@@ -51,9 +51,16 @@ def _body(messages, model, temperature, max_tokens, stream, extra):
     return b
 
 
-def chat(messages, temperature=0.1, max_tokens=None, model=None, base=None, extra=None, timeout=300) -> str:
+def chat_full(messages, temperature=0.1, max_tokens=None, model=None, base=None, extra=None, timeout=300) -> dict:
+    """{"text", "finish_reason", "usage"}; finish_reason "length" means the reply hit max_tokens."""
     with _request(endpoint(base), _body(messages, model, temperature, max_tokens, False, extra), timeout) as r:
-        return json.loads(r.read())["choices"][0]["message"]["content"]
+        d = json.loads(r.read())
+    ch = d["choices"][0]
+    return {"text": ch["message"]["content"] or "", "finish_reason": ch.get("finish_reason"), "usage": d.get("usage") or {}}
+
+
+def chat(messages, temperature=0.1, max_tokens=None, model=None, base=None, extra=None, timeout=300) -> str:
+    return chat_full(messages, temperature, max_tokens, model, base, extra, timeout)["text"]
 
 
 def chat_stream(messages, temperature=0.1, max_tokens=None, model=None, base=None, extra=None, timeout=300):

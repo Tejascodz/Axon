@@ -234,7 +234,7 @@ def training_examples(items, seed=1, p_unanswerable=0.2, p_injection=0.1, n_sour
             target = f"Answer: {guards.INSUFFICIENT}\nEvidence: The sources do not contain the information needed to answer this question."
         else:
             cites = "".join(f"[{s['id']}]" for s in srcs if s["title"] in it["gold"])
-            ev = " ".join(it["evidence"].split()[:40]) or it["answer"]
+            ev = " ".join(it["evidence"].split()[:25]) or it["answer"]          # short: citations must fit
             target = f"Answer: {it['answer']}\nEvidence: {ev} {cites}"
         out.append({"messages": guards.build_messages(it["question"], srcs), "target": target, "kind": kind})
     return out

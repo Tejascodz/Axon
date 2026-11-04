@@ -206,26 +206,33 @@ def traindata(a):
 # --------------------------------------------------------------------------- generate
 
 def generate(a):
-    from nyaya.llm import chat
+    from nyaya.llm import chat_full
     P = json.load(open(f"{R}/r5_prompts.json"))
+    mt = 192                       # enough for "Answer:" + an evidence sentence + citations; cut-offs are recorded
     lim = a.limit or None
     jobs = []                                                       # (arm, index, messages, max_tokens)
     for i, p in enumerate(P["answer"][:lim]):
-        jobs.append(("answer", i, p["messages"], 96))
+        jobs.append(("answer", i, p["messages"], mt))
     for i, p in enumerate(P["unanswerable"][:lim]):
-        jobs.append(("unanswerable", i, p["messages"], 96))
+        jobs.append(("unanswerable", i, p["messages"], mt))
     for i, p in enumerate(P["injection"][:lim]):
         for arm in ("undefended", "defended", "scanned"):
-            jobs.append((f"injection_{arm}", i, p[arm], 96))
+            jobs.append((f"injection_{arm}", i, p[arm], mt))
     for i, p in enumerate(P["condition"][:lim]):
-        jobs.append(("condition_alone", i, p["alone"], 12))
-        jobs.append(("condition_cert", i, p["cert"], 12))
+        jobs.append(("condition_alone", i, p["alone"], 16))
+        jobs.append(("condition_cert", i, p["cert"], 16))
+
+    cut = {}
 
     def run(job):
         arm, i, msgs, mt = job
+        err = "unknown"
         for attempt in range(3):
             try:
-                return job, chat(msgs, temperature=0.0, max_tokens=mt, model=a.model, base=a.base, timeout=600)
+                out = chat_full(msgs, temperature=0.0, max_tokens=mt, model=a.model, base=a.base, timeout=600)
+                if out["finish_reason"] == "length":
+                    cut[(arm, i)] = True
+                return job, out["text"]
             except Exception as e:
                 err = repr(e)[:200]
                 time.sleep(2 * (attempt + 1))
@@ -256,7 +263,15 @@ def generate(a):
             v = rag_eval.parse_verdict(r)
             rows.append({"truth": p["truth"], "verdict": v, "correct": float(v == p["truth"]), "reply": r[:200]})
         rec["arms"][f"condition_{arm}"] = rows
+    for arm, rows in rec["arms"].items():                       # replies that hit the token limit
+        for i, row in enumerate(rows):                          # rows are in index order 0..n-1
+            row["truncated"] = bool(cut.get((arm, i)))
+    rec["truncated"] = {arm: sum(r["truncated"] for r in rows) for arm, rows in rec["arms"].items()}
     rec["errors"] = sum(1 for _, r in out if r.startswith("<error"))
+    rec["errors_by_arm"] = {}
+    for (arm, _, _, _), r in out:
+        if r.startswith("<error"):
+            rec["errors_by_arm"][arm] = rec["errors_by_arm"].get(arm, 0) + 1
     _dump(rec, f"{R}/r5_gen_{a.tag}.json")
     print(f"{a.tag}: {len(jobs)} requests in {rec['minutes']} min, {rec['errors']} errors", flush=True)
 
