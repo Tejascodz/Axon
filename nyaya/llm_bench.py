@@ -41,8 +41,10 @@ def _mean(xs):
 def scrape(base: str) -> dict:
     root = base.rstrip("/")
     root = root[:-3] if root.endswith("/v1") else root
+    if not root.startswith(("http://", "https://")):
+        raise ValueError("server URL must be http(s)")
     try:
-        with urllib.request.urlopen(f"{root}/metrics", timeout=10) as r:
+        with urllib.request.urlopen(f"{root}/metrics", timeout=10) as r:  # scheme checked above  # nosec B310
             return parse(r.read().decode())
     except Exception:
         return {}

@@ -55,7 +55,7 @@ from kaggle_run import PY, ROOT, log  # noqa: E402
 
 LLM = "Qwen/Qwen3-4B-Instruct-2507"
 RETRIEVER = "lightonai/LateOn"
-FT_DIR = "/tmp/r5_ft"
+FT_DIR = "/tmp/r5_ft"  # single-user Kaggle VM scratch  # nosec B108
 STATUS = "results/r5_status.json"
 VLLM_PIN = "0.33.0"                 # the release that ran on Kaggle T4s in round 5; others are fallbacks
 VLLM_ATTEMPTS = [(VLLM_PIN, []), (None, []), (VLLM_PIN, ["--enforce-eager"]), ("0.11.0", ["--enforce-eager"])]
@@ -129,7 +129,7 @@ class Server:
             if self.p.poll() is not None:
                 return False
             try:
-                urllib.request.urlopen(self.base.replace("/v1", "") + "/health", timeout=5)
+                urllib.request.urlopen(self.base.replace("/v1", "") + "/health", timeout=5)  # our own http://127.0.0.1 server  # nosec B310
                 chat([{"role": "user", "content": "Say OK."}], max_tokens=4, model=model, base=self.base, timeout=120)
                 return True
             except Exception:
@@ -156,7 +156,7 @@ class Server:
         wait_gpu_free(self.gpu)
 
 
-def free_gb(path="/tmp"):
+def free_gb(path="/tmp"):  # single-user Kaggle VM scratch  # nosec B108
     return shutil.disk_usage(path).free / 2 ** 30
 
 
@@ -188,7 +188,7 @@ def make_env(env_dir, specs, module, logname, python=None):
 
 
 def vllm_python(version):
-    return make_env(f"/tmp/vllm_env_{version or 'latest'}", [f"vllm=={version}" if version else "vllm"], "vllm",
+    return make_env(f"/tmp/vllm_env_{version or 'latest'}", [f"vllm=={version}" if version else "vllm"], "vllm",  # single-user Kaggle VM scratch  # nosec B108
                     "vllm_install")
 
 
@@ -198,7 +198,7 @@ def sglang_python():
         return None
     # Python 3.12: SGLang depends on outlines-core, which has no ready-made build for 3.13 and would
     # otherwise need a Rust compiler
-    return make_env("/tmp/sglang_env", ["sglang", "sglang[all]"], "sglang", "sglang_install", python="3.12")
+    return make_env("/tmp/sglang_env", ["sglang", "sglang[all]"], "sglang", "sglang_install", python="3.12")  # single-user Kaggle VM scratch  # nosec B108
 
 
 def start_vllm(model_path, served, gpu, port=8000):
@@ -230,7 +230,7 @@ def cuda_link_env():
     fails with "cannot find -lcuda". A private folder with a libcuda.so link fixes the build
     without touching system files."""
     import glob
-    d = "/tmp/cuda_link"
+    d = "/tmp/cuda_link"  # single-user Kaggle VM scratch  # nosec B108
     link = f"{d}/libcuda.so"
     if not os.path.exists(link):
         cands = []

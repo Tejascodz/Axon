@@ -21,6 +21,7 @@ What it returns
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 import torch
@@ -58,14 +59,16 @@ class Index:
 
 class Axon:
     def __init__(self, model: str = "lightonai/LateOn", method: str = "grouped",
-                 device: str | None = None, query_length: int = 128, batch_size: int = 32, fp16: bool = True):
+                 device: str | None = None, query_length: int = 128, batch_size: int = 32, fp16: bool = True,
+                 revision: str | None = None):
         if method not in METHODS:
             raise ValueError(f"method must be one of {METHODS}")
         self.method, self.batch_size, self.model_name = method, batch_size, model
+        self.revision = revision or os.environ.get("AXON_MODEL_REVISION") or None
         self.device = device or ("cuda" if torch.cuda.is_available() else
                                  "mps" if torch.backends.mps.is_available() else "cpu")
         self.fp16 = fp16 and self.device == "cuda"
-        self.backbone = PyLateBackbone(model, query_length=query_length)
+        self.backbone = PyLateBackbone(model, query_length=query_length, revision=self.revision)
         dim = self.backbone.hidden
         # one model in memory; each scoring method is a thin wrapper around it
         self._plain = NyayaRetriever(self.backbone, None, "token", "token", "chamfer", dim=dim).to(self.device).eval()

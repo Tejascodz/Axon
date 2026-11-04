@@ -297,7 +297,7 @@ def main():
     r = sub.add_parser("retrieve")
     r.add_argument("--retriever", default="lightonai/LateOn")
     r.add_argument("--data", default="data")
-    r.add_argument("--index", default="/tmp/r5_index")
+    r.add_argument("--index", default="/tmp/r5_index")  # single-user Kaggle VM scratch  # nosec B108
     r.add_argument("--n_answer", type=int, default=500)
     r.add_argument("--n_unanswerable", type=int, default=200)
     r.add_argument("--n_injection", type=int, default=200)

@@ -212,11 +212,12 @@ def main():
     ap.add_argument("--r", type=int, default=16)
     ap.add_argument("--max_len", type=int, default=2048)
     ap.add_argument("--max_minutes", type=float, default=None)
+    ap.add_argument("--revision", default=None, help="model commit hash (pins the exact base weights)")
     a = ap.parse_args()
     from transformers import AutoModelForCausalLM, AutoTokenizer
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    tok = AutoTokenizer.from_pretrained(a.model)
-    model = AutoModelForCausalLM.from_pretrained(a.model, attn_implementation="sdpa",
+    tok = AutoTokenizer.from_pretrained(a.model, revision=a.revision)
+    model = AutoModelForCausalLM.from_pretrained(a.model, revision=a.revision, attn_implementation="sdpa",
                                                  **dtype_kw(torch.float16 if dev == "cuda" else torch.float32)).to(dev)
     if a.apply_adapter:
         n = load_adapter(model, a.apply_adapter, r=a.r, alpha=2.0 * a.r)

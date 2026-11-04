@@ -37,7 +37,7 @@ def _request(base, body, timeout):
     if os.environ.get("NYAYA_LLM_API_KEY"):
         headers["Authorization"] = f"Bearer {os.environ['NYAYA_LLM_API_KEY']}"
     req = urllib.request.Request(f"{base}/chat/completions", data=json.dumps(body).encode(), headers=headers)
-    return urllib.request.urlopen(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)  # base comes from endpoint(), http(s) only  # nosec B310
 
 
 def _body(messages, model, temperature, max_tokens, stream, extra):

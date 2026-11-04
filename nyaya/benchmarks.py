@@ -129,9 +129,9 @@ def multiconir(model, root: str, domains=DOMAINS, limit_rows: int | None = None,
 def load_nanobeir(name: str, dataset_id: str = "sentence-transformers/NanoBEIR-en"):
     from datasets import load_dataset
     split = f"Nano{NANO_NAMES[name]}"
-    corpus = load_dataset(dataset_id, "corpus", split=split)
-    queries = load_dataset(dataset_id, "queries", split=split)
-    qrels = load_dataset(dataset_id, "qrels", split=split)
+    corpus = load_dataset(dataset_id, "corpus", split=split)  # evaluation data, not code  # nosec B615
+    queries = load_dataset(dataset_id, "queries", split=split)  # evaluation data, not code  # nosec B615
+    qrels = load_dataset(dataset_id, "qrels", split=split)  # evaluation data, not code  # nosec B615
     docs = [NS(doc_id=str(r["_id"]), text=r["text"]) for r in corpus if r["text"]]
     qtext = {str(r["_id"]): r["text"] for r in queries if r["text"]}
     gold: dict[str, set] = {}

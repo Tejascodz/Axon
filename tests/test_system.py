@@ -1,11 +1,13 @@
 """Tests for the RAG system around the retriever: guardrails, metrics, LoRA, server, evaluation."""
 import os
 import sys
+import time
 
 import torch
 import torch.nn as nn
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from nyaya import guards, lora, metrics, rag_eval  # noqa: E402
 
@@ -251,6 +253,13 @@ def test_incremental_update_compact_and_live_reload(tmp_path):
         with pytest.raises(RuntimeError):
             ix.update(str(src), str(out), ax)
 
+    other = _FakeAxon()                                                   # same name, other weights
+    other.revision = "0123abc"
+    with pytest.raises(RuntimeError, match="not be comparable"):
+        ix.update(str(src), str(out), other)                              # would mix two embedding spaces
+    with pytest.raises(RuntimeError, match="not be comparable"):
+        _rag(out, other)                                                  # a server with a different AXON_MODEL
+
 
 def test_vector_store_matches_brute_force():
     from nyaya.store import VectorStore
@@ -410,3 +419,75 @@ def test_server_request_ids_bounded_labels_backpressure_and_readiness(monkeypatc
     assert ok.status_code == 200 and ok.json()["request_id"] == ok.headers["x-request-id"]
     logged = capsys.readouterr().out
     assert '"route": "/ask"' in logged and "secret question text" not in logged   # requests logged, content never
+
+
+def test_server_metrics_key_secret_files_and_fail_closed(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from nyaya import server
+    for v in ("AXON_API_KEY", "AXON_TENANT_KEYS", "AXON_METRICS_KEY", "AXON_API_KEY_FILE", "AXON_REQUIRE_AUTH"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setattr(server, "RATE", 0)
+
+    class Fake:
+        def rerank(self, *a, **k):
+            return []
+    monkeypatch.setattr(server, "model", lambda: Fake())
+    cl = TestClient(server.app)
+    body = {"query": "q", "documents": ["d"]}
+
+    monkeypatch.setenv("AXON_REQUIRE_AUTH", "1")                    # no key configured: refuse, never run open
+    assert cl.post("/rerank", json=body).status_code == 503
+    assert cl.get("/health").status_code == 200                       # probes still answer
+
+    key_file = tmp_path / "api_key"
+    key_file.write_text("first-key-0123456789\n")
+    monkeypatch.setenv("AXON_API_KEY_FILE", str(key_file))
+    monkeypatch.setenv("AXON_METRICS_KEY", "metrics-key-0123456789")
+    first = {"Authorization": "Bearer first-key-0123456789"}
+    scraper = {"Authorization": "Bearer metrics-key-0123456789"}
+    assert cl.post("/rerank", json=body, headers=first).status_code == 200
+    assert cl.get("/metrics", headers=first).status_code == 401      # client keys cannot read metrics
+    assert cl.post("/rerank", json=body, headers=scraper).status_code == 401   # the scraper key reads metrics only
+    page = cl.get("/metrics", headers=scraper)
+    assert page.status_code == 200
+    for name in ("axon_ready", "axon_ask_inflight 0.0", "axon_ask_capacity", "process_start_time_seconds"):
+        assert name in page.text
+
+    key_file.write_text("second-key-0123456789")                      # rotated on disk: no restart needed
+    os.utime(key_file, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
+    assert cl.post("/rerank", json=body, headers=first).status_code == 401
+    assert cl.post("/rerank", json=body, headers={"Authorization": "Bearer second-key-0123456789"}).status_code == 200
+    key_file.unlink()                                                  # secret vanished: fail closed
+    assert cl.post("/rerank", json=body, headers=first).status_code == 503
+
+
+def test_answer_end_to_end_with_streaming_stub_llm(tmp_path, monkeypatch):
+    """The CI stack's checks, without Docker: index the CI documents, answer through a streamed
+    OpenAI-compatible endpoint, and check citations, timing and the injection quarantine."""
+    import importlib.util
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from nyaya import index as ix
+    spec = importlib.util.spec_from_file_location("fake_llm", os.path.join(ROOT, "deploy", "ci", "fake_llm.py"))
+    fake = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fake)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), fake.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setenv("NYAYA_LLM_BASE_URL", f"http://127.0.0.1:{srv.server_address[1]}/v1")
+    monkeypatch.delenv("NYAYA_LLM_API_KEY", raising=False)
+    try:
+        ax = _FakeAxon()
+        ix.build(os.path.join(ROOT, "deploy", "ci", "docs"), str(tmp_path / "index"), ax)
+        rag = _rag(tmp_path / "index", ax)
+        out = rag.answer("How heavy is the Ridgeline trail jacket?", k=5)
+        assert out["sources"][0]["source"] == "jackets.md"
+        assert not out["abstained"] and out["check"]["cited"] and "410 grams" in out["text"]
+        assert out["timing"]["ttft"] is not None and out["timing"]["completion_tokens"] > 1
+        out = rag.answer("What is the shipping update for stoves?", k=5)
+        assert [w["title"] for w in out["withheld"]] == ["notice.md"]
+        assert "text" not in out["withheld"][0] and out["withheld"][0]["flags"]   # hostile text not echoed back
+        assert all(s["source"] != "notice.md" for s in out["sources"]) and "PWNED" not in out["text"]
+    finally:
+        srv.shutdown()

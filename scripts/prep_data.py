@@ -25,7 +25,7 @@ def msmarco(path, n):
     if os.path.exists(path):
         return "present"
     from datasets import load_dataset
-    ds = load_dataset("sentence-transformers/msmarco-bm25", "triplet", split="train", streaming=True)
+    ds = load_dataset("sentence-transformers/msmarco-bm25", "triplet", split="train", streaming=True)  # training data, not code  # nosec B615
     k = 0
     with open(path + ".tmp", "w") as f:
         for r in ds:

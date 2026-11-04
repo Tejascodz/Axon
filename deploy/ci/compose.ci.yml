@@ -1,0 +1,11 @@
+# CI only: a stand-in LLM (deploy/ci/fake_llm.py) under the network name `llm`, so /ask runs end to end.
+services:
+  fake-llm:
+    image: python:3.12-slim
+    command: ["python", "-I", "/fake_llm.py"]
+    user: "65534"
+    read_only: true
+    volumes: ["./ci/fake_llm.py:/fake_llm.py:ro"]
+    networks:
+      backend:
+        aliases: [llm]

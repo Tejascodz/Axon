@@ -18,6 +18,13 @@ Protection
     (built with `--tenants`). The key decides the tenant; /ask only ever retrieves that tenant's
     documents, and the filter is applied inside retrieval, not in the prompt. A malformed list
     refuses every request instead of turning authentication off.
+  * AXON_REQUIRE_AUTH=1: refuse every request (503) if no key is configured, so a deployment
+    with a missing secret fails closed instead of running open. The Docker image sets it.
+  * AXON_METRICS_KEY: when set, /metrics accepts only this key (give it to Prometheus, not to
+    clients); otherwise /metrics is protected like every other route.
+  * Each key setting can instead name a file, e.g. AXON_API_KEY_FILE=/run/secrets/axon_api_key
+    (Docker or Kubernetes secrets), so keys never sit in the environment. The file is re-read
+    when it changes, so keys rotate without a restart.
   * AXON_RATE_PER_MIN: requests per minute per client address (default 120; 0 disables; /metrics exempt).
   * AXON_MAX_INFLIGHT: /ask requests served at once (default 16); more get 503 at once instead of
     queueing without bound (back-pressure).
@@ -66,6 +73,34 @@ LAT = REGISTRY.histogram("axon_request_seconds", "HTTP request latency", ["path"
 DOCS = REGISTRY.histogram("axon_documents_per_request", "Documents per re-rank request", [],
                           buckets=(1, 5, 10, 25, 50, 100, 250, 500))
 INFLIGHT = REGISTRY.counter("axon_ask_rejected_total", "/ask requests refused because the server was full")
+_START = time.time()
+_inflight = [0]
+_inflight_lock = threading.Lock()
+
+
+def _rss_bytes():
+    with open("/proc/self/statm") as f:                      # Linux; elsewhere the sample is left out
+        return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+
+
+def _index_value(fn):
+    def read():
+        rag = _state.get("rag")
+        return None if rag is None else fn(rag)
+    return read
+
+
+REGISTRY.gauge("axon_ready", "1 once the model (and index, if configured) is loaded",
+               fn=lambda: 1.0 if _state.get("ready") else 0.0)
+REGISTRY.gauge("axon_ask_inflight", "/ask requests being served now", fn=lambda: _inflight[0])
+REGISTRY.gauge("axon_ask_capacity", "AXON_MAX_INFLIGHT", fn=lambda: MAX_INFLIGHT)
+REGISTRY.gauge("axon_index_version", "Version of the index snapshot being served",
+               fn=_index_value(lambda r: r.cfg.get("version", 0)))
+REGISTRY.gauge("axon_index_live_chunks", "Searchable chunks in the served index", fn=_index_value(lambda r: r.store.n_live))
+REGISTRY.gauge("axon_index_dead_chunks", "Deleted chunks awaiting `rag compact`",
+               fn=_index_value(lambda r: len(r.store) - r.store.n_live))
+REGISTRY.gauge("process_resident_memory_bytes", "Resident memory of the server process", fn=_rss_bytes)
+REGISTRY.gauge("process_start_time_seconds", "Start time of the process (Unix seconds)", fn=lambda: _START)
 
 class _StdoutHandler(logging.Handler):
     """One JSON object per line on whatever stdout is now (process managers may swap it)."""
@@ -151,10 +186,29 @@ def _allowed(client: str) -> bool:
         return True
 
 
+_secret_cache: dict = {}
+
+
+def _secret(name: str):
+    """NAME from the environment, or the contents of the file NAME_FILE (cached until it changes).
+    An unreadable file raises: a missing secret must never mean "no authentication"."""
+    if os.environ.get(name):
+        return os.environ[name]
+    path = os.environ.get(name + "_FILE")
+    if not path:
+        return None
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size)
+    if _secret_cache.get(name, (None,))[0] != key:
+        with open(path) as f:
+            _secret_cache[name] = (key, f.read().strip())
+    return _secret_cache[name][1] or None
+
+
 def _tenant_keys():
     """[(tenant, key)], or None when AXON_TENANT_KEYS is set but malformed (then every request is
     refused: a typo in the key list must never turn authentication off)."""
-    raw = os.environ.get("AXON_TENANT_KEYS", "").strip()
+    raw = (_secret("AXON_TENANT_KEYS") or "").replace("\n", ",").strip().strip(",")
     if not raw:
         return []
     pairs = []
@@ -164,6 +218,30 @@ def _tenant_keys():
             return None
         pairs.append((t.strip(), k.strip()))
     return pairs
+
+
+def _authorize(raw: str, got: bytes):
+    """(None, tenant) when the request may go on, else ((status, detail), None). Every configured key
+    is compared, in constant time, whatever matches first."""
+    try:
+        tenant_keys, key, metrics_key = _tenant_keys(), _secret("AXON_API_KEY"), _secret("AXON_METRICS_KEY")
+    except OSError:
+        return (503, "server misconfigured: a key file cannot be read"), None
+    if raw == "/metrics" and metrics_key:                  # least privilege: the scraper's key reads metrics only
+        return (None if hmac.compare_digest(got, f"Bearer {metrics_key}".encode()) else (401, "unauthorized")), None
+    if tenant_keys is None:
+        return (503, "server misconfigured: AXON_TENANT_KEYS needs tenant:key pairs, keys of 16+ characters"), None
+    if tenant_keys:
+        match = None
+        for tenant, k in tenant_keys:                      # check every key: timing reveals nothing
+            if hmac.compare_digest(got, f"Bearer {k}".encode()):
+                match = tenant
+        return (None, match) if match is not None else ((401, "unauthorized"), None)
+    if key:
+        return (None if hmac.compare_digest(got, f"Bearer {key}".encode()) else (401, "unauthorized")), None
+    if os.environ.get("AXON_REQUIRE_AUTH") == "1":         # deployments set this: no key configured = refuse
+        return (503, "server misconfigured: AXON_REQUIRE_AUTH=1 but no key is set"), None
+    return None, None
 
 
 def _deny(path, rid, status, detail):
@@ -182,28 +260,12 @@ async def guard(request: Request, call_next):
     status = 500
     try:
         if raw not in OPEN:
-            got = request.headers.get("authorization", "").encode()
-            tenant_keys = _tenant_keys()
-            key = os.environ.get("AXON_API_KEY")
-            if tenant_keys is None:
-                status = 503
-                return _deny(path, rid, 503, "server misconfigured: AXON_TENANT_KEYS needs tenant:key pairs, "
-                                             "keys of 16+ characters")
-            if tenant_keys:
-                match = None
-                for tenant, k in tenant_keys:              # check every key: timing reveals nothing
-                    if hmac.compare_digest(got, f"Bearer {k}".encode()):
-                        match = tenant
-                if match is None:
-                    status = 401
-                    return _deny(path, rid, 401, "unauthorized")
-                request.state.tenant = match
-            elif key and not hmac.compare_digest(got, f"Bearer {key}".encode()):
-                status = 401
-                return _deny(path, rid, 401, "unauthorized")
-            if raw != "/metrics" and not _allowed(request.client.host if request.client else "unknown"):
-                status = 429
-                return _deny(path, rid, 429, "rate limit exceeded")
+            denied, request.state.tenant = _authorize(raw, request.headers.get("authorization", "").encode())
+            if not denied and raw != "/metrics" and not _allowed(request.client.host if request.client else "unknown"):
+                denied = (429, "rate limit exceeded")
+            if denied:
+                status = denied[0]
+                return _deny(path, rid, *denied)
         resp = await call_next(request)
         status = resp.status_code
         resp.headers["X-Request-ID"] = rid
@@ -269,7 +331,9 @@ def rerank(req: RerankRequest):
 def ask(req: AskRequest, request: Request):
     if not _ask_slots.acquire(blocking=False):
         INFLIGHT.inc()
-        raise HTTPException(503, "server busy, retry shortly")
+        raise HTTPException(503, "server busy, retry shortly", headers={"Retry-After": "1"})
+    with _inflight_lock:
+        _inflight[0] += 1
     try:
         out = pipeline().answer(req.question, k=req.k, tenant=request.state.tenant)
         out["request_id"] = request.state.request_id
@@ -283,4 +347,6 @@ def ask(req: AskRequest, request: Request):
                              "error": type(e).__name__}))
         raise HTTPException(502, f"generation failed: {type(e).__name__}")
     finally:
+        with _inflight_lock:
+            _inflight[0] -= 1
         _ask_slots.release()

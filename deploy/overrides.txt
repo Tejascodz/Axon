@@ -1,0 +1,19 @@
+# Security overrides for the Axon image (installed with `uv pip install --override`).
+# PyLate 1.6.0 pins these versions, which have published advisories (pip-audit, checked 2026-11-05):
+#   sentence-transformers 5.3.0  PYSEC-2026-4164 (code execution via model loading)       fixed in 5.6.0
+#   transformers 5.3.0           PYSEC-2026-2290, PYSEC-2026-3929 (file write), -4174      fixed in 5.10.0
+#   ujson 5.12.0                 PYSEC-2026-2293, PYSEC-2026-2294                          fixed in 5.13.0
+# Kept within the same major versions. Equivalence with the pinned stack (same vectors, same recall
+# with the real LateOn model) is checked by scripts/round6.py, step `deps`. Build with
+# --build-arg PYLATE_PINS=1 to use PyLate's own pins instead.
+sentence-transformers>=5.6.0,<6
+transformers>=5.10.0,<6
+ujson>=5.13.0,<6
+# torch stays on 2.11: fast-plaid (PLAID search) ships compiled against one torch release, and PyLate
+# allows fast-plaid builds up to 1.4.6.2110 (torch 2.11). torch 2.15 with that build segfaults on the
+# first PLAID index (checked). The open torch advisory, PYSEC-2025-194, is in torch.jit.script, which
+# Axon never calls and no request can reach; CI's pip-audit ignores that ID.
+torch>=2.11,<2.12
+# setuptools is not overridden: torch 2.11 requires setuptools<82. Its two advisories are in building
+# source distributions (PYSEC-2026-3447) and in Windows legacy wheel installs (GHSA-xmj3-9gf7-h52w);
+# the image builds no sdists and runs Linux. CI's pip-audit ignores those two IDs and nothing else.

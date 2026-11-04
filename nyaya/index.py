@@ -96,6 +96,15 @@ def _atomic_lines(path, rows):
     os.replace(tmp, path)
 
 
+def check_model(cfg: dict, axon):
+    """Query and document vectors are only comparable from the same model: refuse a mismatch."""
+    mine = (axon.model_name, getattr(axon, "revision", None))
+    built = (cfg.get("model"), cfg.get("model_revision")) if "model_revision" in cfg else (cfg.get("model"), mine[1])
+    if built != mine:
+        raise RuntimeError(f"the index was built with {built[0]} (revision {built[1]}), this process has "
+                           f"{mine[0]} (revision {mine[1]}): vectors would not be comparable")
+
+
 def read_config(out: str) -> dict:
     return json.load(open(os.path.join(out, "config.json")))
 
@@ -146,7 +155,7 @@ def build(src_or_chunks, out: str, axon, plaid: bool = False, tenants_from_dirs:
             manifest[c["source"]]["chunks"].append(c["id"])
     with locked(out):
         store = axon.encode_store([c["text"] for c in chunks], log=log)
-        cfg = {"model": axon.model_name, "version": 1, "plaid": False, "skipped": refused,
+        cfg = {"model": axon.model_name, "model_revision": getattr(axon, "revision", None), "version": 1, "plaid": False, "skipped": refused,
                "tenants_from_dirs": tenants_from_dirs, "source": src_or_chunks if isinstance(src_or_chunks, str) else None}
         if plaid:
             try:
@@ -168,6 +177,7 @@ def update(src: str, out: str, axon, log=None) -> dict:
         cfg = read_config(out)
         if cfg.get("format") != FORMAT:
             raise RuntimeError("this index was built by an older version: rebuild it once with `build`")
+        check_model(cfg, axon)
         chunks = [json.loads(line) for line in open(os.path.join(out, "chunks.jsonl"))]
         manifest = json.load(open(os.path.join(out, "manifest.json")))
         store = VectorStore.load(os.path.join(out, "vectors.pt"))

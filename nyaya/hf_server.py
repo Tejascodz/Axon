@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import threading
 import time
 import uuid
@@ -48,13 +49,14 @@ class ChatRequest(BaseModel):
     stream_options: dict | None = None
 
 
-def load(name: str, device: str | None = None):
+def load(name: str, device: str | None = None, revision: str | None = None):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device == "cuda" else torch.float32
-    tok = AutoTokenizer.from_pretrained(name)
+    revision = revision or os.environ.get("HF_MODEL_REVISION") or None      # a commit hash pins the weights
+    tok = AutoTokenizer.from_pretrained(name, revision=revision)
     from .lora import dtype_kw
-    model = AutoModelForCausalLM.from_pretrained(name, **dtype_kw(dtype)).to(device).eval()
+    model = AutoModelForCausalLM.from_pretrained(name, revision=revision, **dtype_kw(dtype)).to(device).eval()
     STATE.update(name=name, tok=tok, model=model, device=device)
 
 

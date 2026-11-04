@@ -1,0 +1,129 @@
+groups:
+  - name: axon-availability
+    rules:
+      - alert: AxonDown
+        expr: up{job="axon"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: Axon is not answering scrapes
+          runbook: deploy/RUNBOOK.md#axondown
+
+      - alert: AxonNotReady
+        expr: axon_ready == 0
+        for: 15m
+        labels: {severity: critical}
+        annotations:
+          summary: Axon has been up for 15m without loading its model or index
+          runbook: deploy/RUNBOOK.md#axonnotready
+
+      - alert: LLMDown
+        expr: up{job="llm"} == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: The LLM server is not answering; /ask will fail with 502
+          runbook: deploy/RUNBOOK.md#llmdown
+
+  - name: axon-errors-latency
+    rules:
+      - alert: AxonHighErrorRate
+        expr: |
+          sum(rate(axon_requests_total{path=~"/ask|/rerank", status=~"5.."}[5m]))
+            / sum(rate(axon_requests_total{path=~"/ask|/rerank"}[5m])) > 0.05
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: More than 5% of /ask and /rerank requests fail with 5xx
+          runbook: deploy/RUNBOOK.md#axonhigherrorrate
+
+      - alert: AxonAskSaturated
+        expr: rate(axon_ask_rejected_total[5m]) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: /ask is at AXON_MAX_INFLIGHT and refusing requests with 503
+          runbook: deploy/RUNBOOK.md#axonasksaturated
+
+      - alert: AxonAskSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(axon_request_seconds_bucket{path="/ask"}[5m]))) > 20
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: p95 /ask latency above 20 s
+          runbook: deploy/RUNBOOK.md#axonaskslow
+
+      - alert: RAGTimeToFirstTokenHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(rag_time_to_first_token_seconds_bucket[5m]))) > 5
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: p95 time to first token above 5 s (LLM queueing or prefill too slow)
+          runbook: deploy/RUNBOOK.md#ragtimetofirsttokenhigh
+
+      - alert: RetrievalSlow
+        expr: histogram_quantile(0.95, sum by (le, stage) (rate(rag_stage_seconds_bucket{stage=~"first_stage|rerank"}[5m]))) > 1
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: p95 {{ $labels.stage }} above 1 s (index outgrew exact search? build with --plaid)
+          runbook: deploy/RUNBOOK.md#retrievalslow
+
+  - name: axon-safety
+    rules:
+      - alert: TenantFilterViolationBlocked
+        expr: increase(rag_events_total{event="tenant_filter_violation_blocked"}[10m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: A result from another tenant reached the final check and was blocked; this is a bug
+          runbook: deploy/RUNBOOK.md#tenantfilterviolationblocked
+
+      - alert: UncitedAnswersHigh
+        expr: |
+          sum(rate(rag_events_total{event="uncited_answer_withheld"}[30m]))
+            / sum(rate(rag_events_total{event=~"answered|abstained"}[30m])) > 0.10
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: Over 10% of answers withheld for lacking citations (model or prompt regression)
+          runbook: deploy/RUNBOOK.md#uncitedanswershigh
+
+      - alert: InjectionAttemptsSpike
+        expr: increase(rag_events_total{event="source_withheld"}[1h]) > 50
+        labels: {severity: warning}
+        annotations:
+          summary: Over 50 retrieved sources quarantined in an hour; check what was indexed
+          runbook: deploy/RUNBOOK.md#injectionattemptsspike
+
+  - name: axon-capacity
+    rules:
+      - alert: IndexReloadFailing
+        expr: increase(rag_events_total{event="index_reload_failed"}[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: Axon could not load the updated index and is serving the previous version
+          runbook: deploy/RUNBOOK.md#indexreloadfailing
+
+      - alert: IndexNeedsCompaction
+        expr: axon_index_dead_chunks / (axon_index_dead_chunks + axon_index_live_chunks) > 0.3
+        for: 1h
+        labels: {severity: info}
+        annotations:
+          summary: Over 30% of the index is deleted chunks; run `python -m nyaya.rag compact`
+          runbook: deploy/RUNBOOK.md#indexneedscompaction
+
+      - alert: AxonMemoryGrowing
+        expr: deriv(process_resident_memory_bytes{job="axon"}[1h]) > 20000
+        for: 3h
+        labels: {severity: warning}
+        annotations:
+          summary: Axon memory has grown steadily for 3 h (over ~70 MB per hour)
+          runbook: deploy/RUNBOOK.md#axonmemorygrowing
+
+      - alert: LLMQueueBacklog
+        expr: (max(vllm:num_requests_waiting) or max(sglang:num_queue_reqs)) > 16
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Over 16 requests waiting in the LLM server queue
+          runbook: deploy/RUNBOOK.md#llmqueuebacklog

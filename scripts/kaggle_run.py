@@ -239,7 +239,7 @@ def main():
     ap.add_argument("--backbone_lr", type=float, default=1e-5)
     ap.add_argument("--mix_ratio", type=float, default=0.5)
     ap.add_argument("--tau", type=float, default=0.05)
-    ap.add_argument("--ckpt_dir", default="/tmp/nyaya_ckpt")
+    ap.add_argument("--ckpt_dir", default="/tmp/nyaya_ckpt")  # single-user Kaggle VM scratch  # nosec B108
     ap.add_argument("--keep_ckpt", action="store_true")
     ap.add_argument("--summary_only", action="store_true")
     ap.add_argument("--keep_data", action="store_true", help="keep downloaded datasets in data/ (large) after the run")

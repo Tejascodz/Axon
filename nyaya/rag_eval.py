@@ -33,7 +33,7 @@ MAX_WORDS = 120                  # words kept per paragraph in prompts (same for
 
 def _from_hf(split):
     from datasets import load_dataset
-    ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split=split)
+    ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split=split)  # evaluation data, not code  # nosec B615
     for r in ds:
         paras = [(t, " ".join(s).strip()) for t, s in zip(r["context"]["title"], r["context"]["sentences"])]
         sents = {t: s for t, s in zip(r["context"]["title"], r["context"]["sentences"])}
@@ -45,7 +45,7 @@ def _from_json(split, cache):
     path = os.path.join(cache, f"hotpot_{split}.json")
     if not os.path.exists(path):
         os.makedirs(cache, exist_ok=True)
-        urllib.request.urlretrieve(HOTPOT_URLS[split], path + ".tmp")
+        urllib.request.urlretrieve(HOTPOT_URLS[split], path + ".tmp")  # fixed https URLs  # nosec B310
         os.replace(path + ".tmp", path)
     for r in json.load(open(path)):
         paras = [(t, " ".join(s).strip()) for t, s in r["context"]]

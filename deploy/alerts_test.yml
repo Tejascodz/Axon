@@ -1,0 +1,149 @@
+# promtool test rules deploy/alerts_test.yml   (run in CI)
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+
+tests:
+  - name: error rate above 5% fires after 10 minutes, healthy traffic does not
+    interval: 1m
+    input_series:
+      - series: 'axon_requests_total{path="/ask", status="200"}'
+        values: '0+80x30'
+      - series: 'axon_requests_total{path="/ask", status="502"}'
+        values: '0+20x30'
+      - series: 'axon_requests_total{path="/rerank", status="200"}'
+        values: '0+100x30'
+    alert_rule_test:
+      - {eval_time: 4m, alertname: AxonHighErrorRate, exp_alerts: []}
+      - eval_time: 20m
+        alertname: AxonHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: More than 5% of /ask and /rerank requests fail with 5xx
+              runbook: deploy/RUNBOOK.md#axonhigherrorrate
+
+  - name: health probes and 4xx do not count as errors
+    interval: 1m
+    input_series:
+      - series: 'axon_requests_total{path="/ask", status="200"}'
+        values: '0+10x30'
+      - series: 'axon_requests_total{path="/ask", status="401"}'
+        values: '0+50x30'
+      - series: 'axon_requests_total{path="other", status="500"}'
+        values: '0+50x30'
+    alert_rule_test:
+      - {eval_time: 20m, alertname: AxonHighErrorRate, exp_alerts: []}
+
+  - name: a down target fires after 2 minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="axon", instance="axon:8080"}'
+        values: '1 1 0 0 0 0'
+    alert_rule_test:
+      - {eval_time: 3m, alertname: AxonDown, exp_alerts: []}
+      - eval_time: 5m
+        alertname: AxonDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: axon, instance: "axon:8080"}
+            exp_annotations: {summary: Axon is not answering scrapes, runbook: deploy/RUNBOOK.md#axondown}
+
+  - name: one blocked cross-tenant result pages at once
+    interval: 1m
+    input_series:
+      - series: 'rag_events_total{event="tenant_filter_violation_blocked"}'
+        values: '0 0 0 1 1 1'
+    alert_rule_test:
+      - {eval_time: 2m, alertname: TenantFilterViolationBlocked, exp_alerts: []}
+      - eval_time: 4m
+        alertname: TenantFilterViolationBlocked
+        exp_alerts:
+          - exp_labels: {severity: critical, event: tenant_filter_violation_blocked}
+            exp_annotations:
+              summary: A result from another tenant reached the final check and was blocked; this is a bug
+              runbook: deploy/RUNBOOK.md#tenantfilterviolationblocked
+
+  - name: back-pressure that lasts fires, a short burst does not
+    interval: 1m
+    input_series:
+      - series: 'axon_ask_rejected_total'
+        values: '0 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5'
+      - series: 'axon_ask_rejected_total{instance="b"}'
+        values: '0+3x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AxonAskSaturated
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: b}
+            exp_annotations:
+              summary: /ask is at AXON_MAX_INFLIGHT and refusing requests with 503
+              runbook: deploy/RUNBOOK.md#axonasksaturated
+
+  - name: compaction reminder at over 30% deleted chunks, not at 20%
+    interval: 1m
+    input_series:
+      - series: 'axon_index_dead_chunks{job="axon"}'
+        values: '400x100'
+      - series: 'axon_index_live_chunks{job="axon"}'
+        values: '600x100'
+      - series: 'axon_index_dead_chunks{job="other"}'
+        values: '200x100'
+      - series: 'axon_index_live_chunks{job="other"}'
+        values: '800x100'
+    alert_rule_test:
+      - {eval_time: 50m, alertname: IndexNeedsCompaction, exp_alerts: []}
+      - eval_time: 90m
+        alertname: IndexNeedsCompaction
+        exp_alerts:
+          - exp_labels: {severity: info, job: axon}
+            exp_annotations:
+              summary: Over 30% of the index is deleted chunks; run `python -m nyaya.rag compact`
+              runbook: deploy/RUNBOOK.md#indexneedscompaction
+
+  - name: LLM queue backlog works for either server
+    interval: 1m
+    input_series:
+      - series: 'sglang:num_queue_reqs{job="llm"}'
+        values: '20x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: LLMQueueBacklog
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: Over 16 requests waiting in the LLM server queue
+              runbook: deploy/RUNBOOK.md#llmqueuebacklog
+
+  - name: slow re-ranking fires with its stage label, fast first stage does not
+    interval: 1m
+    input_series:
+      - {series: 'rag_stage_seconds_bucket{stage="rerank", le="0.5"}', values: '0+0x30'}
+      - {series: 'rag_stage_seconds_bucket{stage="rerank", le="1.0"}', values: '0+0x30'}
+      - {series: 'rag_stage_seconds_bucket{stage="rerank", le="2.5"}', values: '0+10x30'}
+      - {series: 'rag_stage_seconds_bucket{stage="rerank", le="+Inf"}', values: '0+10x30'}
+      - {series: 'rag_stage_seconds_bucket{stage="first_stage", le="0.5"}', values: '0+10x30'}
+      - {series: 'rag_stage_seconds_bucket{stage="first_stage", le="1.0"}', values: '0+10x30'}
+      - {series: 'rag_stage_seconds_bucket{stage="first_stage", le="2.5"}', values: '0+10x30'}
+      - {series: 'rag_stage_seconds_bucket{stage="first_stage", le="+Inf"}', values: '0+10x30'}
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RetrievalSlow
+        exp_alerts:
+          - exp_labels: {severity: warning, stage: rerank}
+            exp_annotations:
+              summary: p95 rerank above 1 s (index outgrew exact search? build with --plaid)
+              runbook: deploy/RUNBOOK.md#retrievalslow
+
+  - name: uncited answers above 10% fire
+    interval: 1m
+    input_series:
+      - {series: 'rag_events_total{event="answered"}', values: '0+8x120'}
+      - {series: 'rag_events_total{event="abstained"}', values: '0+1x120'}
+      - {series: 'rag_events_total{event="uncited_answer_withheld"}', values: '0+2x120'}
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: UncitedAnswersHigh
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: Over 10% of answers withheld for lacking citations (model or prompt regression)
+              runbook: deploy/RUNBOOK.md#uncitedanswershigh

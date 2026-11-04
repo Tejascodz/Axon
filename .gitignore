@@ -30,3 +30,13 @@ results/r5_lora/*
 *.safetensors
 *.pkl
 *.npz
+
+# deployment: secrets and local settings never committed; the template is
+deploy/secrets/
+deploy/index/
+!deploy/.env.example
+
+# packaging output
+build/
+dist/
+*.egg-info/

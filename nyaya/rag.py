@@ -222,7 +222,9 @@ class AxonRAG:
         from .axon import Axon
         self.dir = index_dir
         cfg = json.load(open(f"{index_dir}/config.json"))
-        self.ax = axon or Axon(cfg["model"], device=device)
+        self.ax = axon or Axon(cfg["model"], device=device, revision=cfg.get("model_revision"))
+        from .index import check_model
+        check_model(cfg, self.ax)                                     # e.g. the server's AXON_MODEL differs
         self._s = _Loaded(index_dir, gpu_budget_gb)
 
     # the current snapshot; `refresh` swaps it in one assignment, so a request in flight keeps its own
@@ -316,8 +318,10 @@ class AxonRAG:
         sources = [{"id": h["id"], "title": h.get("source", ""), "text": h["text"]} for h in hits]
         withheld = []
         if scan:
-            sources, withheld = guards.quarantine(sources)
-            RAG_EVENTS.inc(len(withheld), event="source_withheld")
+            sources, held = guards.quarantine(sources)
+            RAG_EVENTS.inc(len(held), event="source_withheld")
+            # say which source was withheld and why; its (possibly hostile) text is not sent back
+            withheld = [{"id": h["id"], "title": h.get("title", ""), "flags": h["flags"]} for h in held]
         cert = None
         if certificate and len(split_clauses(q)) > 1:
             keep = {s["id"] for s in sources}
@@ -327,6 +331,8 @@ class AxonRAG:
             return {"answer": guards.INSUFFICIENT, "abstained": True, "sources": [], "withheld": withheld,
                     "text": "", "check": None, "timing": {}}
         t = timed_chat(guards.build_messages(q, sources, cert), max_tokens=max_tokens, **llm_kw)
+        if t.get("e2e") is not None:
+            RAG_STAGE.observe(t["e2e"], stage="generate")
         if t["ttft"] is not None:
             RAG_TTFT.observe(t["ttft"])
         for g in t["itl"]:
@@ -391,7 +397,8 @@ def main():
             print(json.dumps(ix.compact(args.index)))
             return
         from .axon import Axon
-        print(json.dumps(ix.update(args.src, args.index, Axon(ix.read_config(args.index)["model"]), log=print)))
+        cfg = ix.read_config(args.index)
+        print(json.dumps(ix.update(args.src, args.index, Axon(cfg["model"], revision=cfg.get("model_revision")), log=print)))
         return
     if args.ckpt:
         hs = HybridSearch(args.index, load_retriever(args.ckpt))

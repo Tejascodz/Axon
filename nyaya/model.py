@@ -75,11 +75,11 @@ class TinyBackbone(nn.Module):
 class HFBackbone(nn.Module):
     """Any Hugging Face encoder (e.g. ModernBERT, BGE, GTE) returning token states."""
 
-    def __init__(self, name, gradient_checkpointing=False):
+    def __init__(self, name, gradient_checkpointing=False, revision=None):
         super().__init__()
         from transformers import AutoModel, AutoTokenizer
-        self.model = AutoModel.from_pretrained(name)
-        self.tokenizer = AutoTokenizer.from_pretrained(name)
+        self.model = AutoModel.from_pretrained(name, revision=revision)
+        self.tokenizer = AutoTokenizer.from_pretrained(name, revision=revision)
         self.hidden = self.model.config.hidden_size
         if gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
@@ -101,10 +101,11 @@ class PyLateBackbone(nn.Module):
     variant reproduces the original model."""
     projected = True
 
-    def __init__(self, name, gradient_checkpointing=False, query_length=None):
+    def __init__(self, name, gradient_checkpointing=False, query_length=None, revision=None):
         super().__init__()
         from pylate import models
-        self.model = models.ColBERT(model_name_or_path=name)
+        # revision: a commit hash pins the exact weights (a name alone follows whatever is pushed next)
+        self.model = models.ColBERT(model_name_or_path=name, revision=revision)
         if query_length:                                  # longer queries, no [MASK] expansion: nothing truncated
             self.set_query_length(query_length)
         last = [m for m in self.model.children()][-1]

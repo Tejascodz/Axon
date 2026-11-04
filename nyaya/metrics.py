@@ -53,7 +53,8 @@ class Counter(_Metric):
             self._v[k] = self._v.get(k, 0.0) + amount
 
     def lines(self):
-        for k, v in sorted(self._v.items()):
+        items = sorted(self._v.items()) or ([((), 0.0)] if not self.labelnames else [])   # 0, not absent
+        for k, v in items:
             yield f"{self.name}{_labels(self.labelnames, dict(zip(self.labelnames, k)))} {v}"
 
 
@@ -73,7 +74,8 @@ class Histogram(_Metric):
             self._v[k] = (counts, s + value)
 
     def lines(self):
-        for k, (counts, s) in sorted(self._v.items()):
+        items = sorted(self._v.items()) or ([((), ([0] * (len(self.buckets) + 1), 0.0))] if not self.labelnames else [])
+        for k, (counts, s) in items:
             lab = dict(zip(self.labelnames, k))
             acc = 0
             for b, c in zip(self.buckets + (math.inf,), counts):
@@ -82,6 +84,35 @@ class Histogram(_Metric):
                 yield f"{self.name}_bucket{_labels(self.labelnames + ('le',), {**lab, 'le': le})} {acc}"
             yield f"{self.name}_sum{_labels(self.labelnames, lab)} {s}"
             yield f"{self.name}_count{_labels(self.labelnames, lab)} {acc}"
+
+
+class Gauge(_Metric):
+    """A value that goes up and down. With `fn` (label-less gauges only) the value is read when
+    /metrics is scraped; if `fn` fails or returns None the sample is left out for that scrape."""
+    kind = "gauge"
+
+    def __init__(self, name, doc, labels, fn=None):
+        super().__init__(name, doc, labels)
+        if fn is not None and self.labelnames:
+            raise ValueError("a gauge read from a function cannot have labels")
+        self._v, self.fn = {}, fn
+
+    def set(self, value, **labels):
+        k = self._key(labels)
+        with self._lock:
+            self._v[k] = float(value)
+
+    def lines(self):
+        if self.fn is not None:
+            try:
+                v = self.fn()
+            except Exception:
+                return
+            if v is not None:
+                yield f"{self.name} {float(v)}"
+            return
+        for k, v in sorted(self._v.items()):
+            yield f"{self.name}{_labels(self.labelnames, dict(zip(self.labelnames, k)))} {v}"
 
 
 class Registry:
@@ -96,12 +127,15 @@ class Registry:
     def counter(self, name, doc, labels=()):
         return self._get(Counter, name, doc, labels)
 
+    def gauge(self, name, doc, labels=(), fn=None):
+        return self._get(Gauge, name, doc, labels, fn=fn)
+
     def histogram(self, name, doc, labels=(), buckets=LATENCY_BUCKETS):
         return self._get(Histogram, name, doc, labels, buckets=buckets)
 
     def render(self) -> str:
         out = []
-        for m in self._m.values():
+        for m in list(self._m.values()):
             out += [f"# HELP {m.name} {m.doc}", f"# TYPE {m.name} {m.kind}", *m.lines()]
         return "\n".join(out) + "\n"
 

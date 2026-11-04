@@ -1,7 +1,11 @@
-name: tests
+name: ci
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,8 +17,99 @@ jobs:
       - name: Install
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy pytest pyflakes fastapi httpx safetensors
+          pip install numpy pytest pyflakes fastapi httpx safetensors bandit==1.9.4
       - name: Lint
-        run: python -m pyflakes nyaya scripts tests
+        run: python -m pyflakes nyaya scripts tests deploy/ci
+      - name: Security scan (bandit, medium severity and above fails)
+        run: bandit -q -r nyaya scripts deploy/ci -ll
+      - name: Dashboard is generated from scripts/make_dashboard.py
+        run: python scripts/make_dashboard.py && git diff --exit-code deploy/grafana
       - name: Test
         run: python -m pytest -q tests
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the image's dependency set (same overrides as deploy/Dockerfile)
+        run: |
+          pip install uv==0.13.7 pip-audit==2.10.1
+          uv pip install --system --index-url https://download.pytorch.org/whl/cpu "torch==2.11.*"
+          uv pip install --system --override deploy/overrides.txt ".[server]" "pypdf>=5"
+      - name: Known vulnerabilities (pip-audit)
+        # Three reviewed exceptions, explained in deploy/overrides.txt: torch.jit.script (never called;
+        # torch is held at 2.11 for fast-plaid) and two setuptools issues in sdist builds and Windows
+        # installs (setuptools held below 82 by torch 2.11). Every other advisory fails the build.
+        run: >-
+          pip-audit --skip-editable --ignore-vuln PYSEC-2025-194
+          --ignore-vuln PYSEC-2026-3447 --ignore-vuln GHSA-xmj3-9gf7-h52w
+
+  monitoring:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool (Prometheus 3.4.1, checksum verified)
+        run: |
+          curl -sSL -o p.tgz https://github.com/prometheus/prometheus/releases/download/v3.4.1/prometheus-3.4.1.linux-amd64.tar.gz
+          echo "09203151c132f36b004615de1a3dea22117ad17e6d7a59962e34f3abf328f312  p.tgz" | sha256sum -c -
+          tar xzf p.tgz && mv prometheus-3.4.1.linux-amd64/promtool .
+      - name: Config, rules and alert unit tests
+        run: |
+          ./promtool check config --syntax-only deploy/prometheus.yml
+          ./promtool check rules deploy/alerts.yml
+          ./promtool test rules deploy/alerts_test.yml
+
+  docker:
+    needs: [test, monitoring]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COMPOSE: docker compose -f deploy/docker-compose.yml -f deploy/ci/compose.ci.yml
+    steps:
+      - uses: actions/checkout@v4
+      - name: Settings and secrets
+        run: |
+          cp deploy/.env.example deploy/.env
+          deploy/make-secrets.sh
+          $COMPOSE config -q
+          $COMPOSE config --format json | python3 -c "import json,sys; e=json.load(sys.stdin)['services']['axon']['environment']; print(e); assert e['AXON_MODEL_REVISION'] == '62911e105059585d244384c7d17826e35f669c17'"
+      - name: The LLM images named in .env.example exist
+        run: |
+          set -a; . deploy/.env; set +a
+          docker manifest inspect "$SGLANG_IMAGE" > /dev/null
+          docker manifest inspect "$VLLM_IMAGE" > /dev/null
+      - name: Build the Axon image
+        run: $COMPOSE build axon
+      - name: Image checks (non-root user, dependencies consistent, PLAID works on the installed torch)
+        run: |
+          test "$(docker run --rm axon:1.0 id -u)" = "10001"
+          docker run --rm axon:1.0 python -m pip check > pipcheck.txt || true
+          cat pipcheck.txt
+          # the only conflicts allowed are the deliberate overrides of PyLate's pins (deploy/overrides.txt)
+          if grep -v -E "^pylate 1\.6\.0 has requirement (sentence-transformers|transformers|ujson)[=<>]|^No broken requirements" pipcheck.txt | grep -q .; then exit 1; fi
+          docker run --rm -i axon:1.0 python - < deploy/ci/plaid_check.py
+      - name: Build an index with the real model inside the image
+        run: |
+          mkdir -p deploy/index && chmod 777 deploy/index
+          $COMPOSE run --rm -v "$PWD/deploy/ci/docs:/docs:ro" -v "$PWD/deploy/index:/index-rw" axon \
+            python -m nyaya.rag build --src /docs --out /index-rw
+      - name: Start the stack
+        run: $COMPOSE up -d axon prometheus grafana fake-llm
+      - name: End-to-end checks
+        run: python3 deploy/ci/smoke.py --secrets deploy/secrets
+      - name: Logs carry request IDs and never content; container is hardened
+        run: |
+          $COMPOSE logs axon > axon.log
+          grep -q '"request_id": "ci-ask-1"' axon.log
+          if grep -q "Ridgeline" axon.log; then echo "question text was logged"; exit 1; fi
+          if grep -qF "$(cat deploy/secrets/axon_api_key)" axon.log; then echo "a key was logged"; exit 1; fi
+          docker inspect axon-axon-1 --format '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.Config.User}}' | tee /dev/stderr | grep -q "true \[ALL\] 10001"
+      - name: Logs on failure
+        if: failure()
+        run: $COMPOSE logs --tail 200
+      - name: Tear down
+        if: always()
+        run: $COMPOSE down -v

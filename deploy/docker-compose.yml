@@ -1,0 +1,137 @@
+# Axon production stack: LLM server + Axon API + Prometheus + Grafana.
+#
+#   cp deploy/.env.example deploy/.env           # then edit
+#   deploy/make-secrets.sh                       # random keys in deploy/secrets/ (never committed)
+#   docker compose -f deploy/docker-compose.yml --profile sglang up -d     # or --profile vllm
+#
+# Every published port binds to 127.0.0.1: put a TLS reverse proxy in front before exposing Axon.
+# The LLM server publishes no port at all; only Axon (and Prometheus) reach it, on the backend network.
+name: axon
+
+x-llm: &llm
+  restart: unless-stopped
+  shm_size: 8gb
+  volumes: [hf-cache:/root/.cache/huggingface]
+  environment:
+    HF_TOKEN: ${HF_TOKEN:-}
+  deploy:
+    resources:
+      reservations:
+        devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+  networks:
+    backend:
+      aliases: [llm]                       # Axon calls http://llm:8000/v1 whichever server runs
+  logging: &logs
+    driver: json-file
+    options: {max-size: "50m", max-file: "5"}
+
+services:
+  sglang:
+    <<: *llm
+    profiles: [sglang]
+    image: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.23}
+    command: >-
+      python3 -m sglang.launch_server --model-path ${LLM_MODEL:-Qwen/Qwen3-4B-Instruct-2507}
+      --served-model-name ${LLM_SERVED_NAME:-axon-llm} --host 0.0.0.0 --port 8000
+      --dtype ${LLM_DTYPE:-half} --context-length ${LLM_MAX_LEN:-4096}
+      --mem-fraction-static 0.85 --max-running-requests ${LLM_MAX_SEQS:-32} --enable-metrics
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 900s
+      retries: 3
+
+  vllm:
+    <<: *llm
+    profiles: [vllm]
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}
+    command: >-
+      --model ${LLM_MODEL:-Qwen/Qwen3-4B-Instruct-2507} --served-model-name ${LLM_SERVED_NAME:-axon-llm}
+      --host 0.0.0.0 --port 8000 --dtype ${LLM_DTYPE:-half} --max-model-len ${LLM_MAX_LEN:-4096}
+      --gpu-memory-utilization 0.90 --max-num-seqs ${LLM_MAX_SEQS:-32}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 900s
+      retries: 3
+
+  axon:
+    build: {context: .., dockerfile: deploy/Dockerfile}
+    image: axon:${AXON_TAG:-1.0}
+    restart: unless-stopped
+    read_only: true                        # writable: /data (model cache) and /tmp only
+    tmpfs: [/tmp:size=512m]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: ${AXON_MEM_LIMIT:-8g}
+    ports: ["127.0.0.1:${AXON_PORT:-8080}:8080"]
+    volumes:
+      - axon-data:/data
+      - ${AXON_INDEX_DIR:-./index}:/index:ro          # built and updated with `python -m nyaya.rag build|update`
+    environment:
+      AXON_MODEL: ${AXON_MODEL:-lightonai/LateOn}
+      AXON_MODEL_REVISION: ${AXON_MODEL_REVISION:-}
+      AXON_INDEX: /index
+      AXON_API_KEY_FILE: /run/secrets/axon_api_key
+      AXON_METRICS_KEY_FILE: /run/secrets/axon_metrics_key
+      AXON_RATE_PER_MIN: ${AXON_RATE_PER_MIN:-120}
+      AXON_MAX_INFLIGHT: ${AXON_MAX_INFLIGHT:-16}
+      NYAYA_LLM_BASE_URL: http://llm:8000/v1
+      NYAYA_LLM_MODEL: ${LLM_SERVED_NAME:-axon-llm}
+      HF_TOKEN: ${HF_TOKEN:-}
+    secrets: [axon_api_key, axon_metrics_key]
+    networks: [backend, frontend]
+    logging: *logs
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.4.1}
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-15d}
+      - --web.listen-address=:9090
+    ports: ["127.0.0.1:${PROM_PORT:-9090}:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prom-data:/prometheus
+    secrets: [axon_metrics_key]
+    networks: [backend, frontend]
+    logging: *logs
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:12.0.2}
+    restart: unless-stopped
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3000}:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    secrets: [grafana_admin_password]
+    networks: [frontend]
+    logging: *logs
+
+secrets:
+  axon_api_key: {file: ./secrets/axon_api_key}
+  axon_metrics_key: {file: ./secrets/axon_metrics_key}
+  grafana_admin_password: {file: ./secrets/grafana_admin_password}
+
+volumes:
+  hf-cache:
+  axon-data:
+  prom-data:
+  grafana-data:
+
+networks:
+  backend:
+  frontend:
