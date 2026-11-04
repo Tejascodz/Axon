@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import threading
 import time
 from collections import defaultdict
 
@@ -182,36 +183,44 @@ def build_axon(src_or_chunks, out: str, model: str = "lightonai/LateOn", plaid: 
     from .axon import Axon
     ax = axon or Axon(model)
     report = ix.build(src_or_chunks, out, ax, plaid=plaid, tenants_from_dirs=tenants_from_dirs, log=log)
-    chunks = [json.loads(line) for line in open(f"{out}/chunks.jsonl")]
-    return ax, report, chunks
+    return ax, report, ix.load(out)[1]
+
+
+def _stamp(index_dir):
+    """Identifies the committed version: each commit renames a new config.json into place, so the
+    inode changes even where file times are coarse."""
+    st = os.stat(f"{index_dir}/config.json")
+    return st.st_ino, st.st_mtime_ns
 
 
 class _Loaded:
-    """One consistent snapshot of an index folder."""
+    """One consistent snapshot of an index folder: config.json first, then exactly the files it names."""
 
     def __init__(self, index_dir, gpu_budget_gb):
-        from .store import VectorStore
-        for attempt in range(3):                                  # a writer may be mid-way: retry once settled
-            cfg_path = f"{index_dir}/config.json"
-            mtime = os.stat(cfg_path).st_mtime_ns
-            cfg = json.load(open(cfg_path))
-            chunks = [json.loads(line) for line in open(f"{index_dir}/chunks.jsonl")]
-            store = VectorStore.load(f"{index_dir}/vectors.pt")
-            if len(store) == len(chunks) and os.stat(cfg_path).st_mtime_ns == mtime:
+        from . import index as ix
+        for attempt in range(5):
+            try:
+                mtime = _stamp(index_dir)
+                cfg, chunks, store, _ = ix.load(index_dir)
                 break
-            time.sleep(1.0)
-        else:
-            raise RuntimeError(f"index in {index_dir} is inconsistent (chunks and vectors differ)")
+            except (FileNotFoundError, ValueError):                  # a commit landed mid-read: read the new one
+                if attempt == 4:
+                    raise
+                time.sleep(0.5)
         self.cfg, self.chunks, self.store, self.mtime = cfg, chunks, store, mtime
         self.live = store.live.numpy().astype(bool)
         self.bm25 = BM25([c["text"] for c in chunks])               # deleted chunks are masked, not removed
         self.plaid = None
         if cfg.get("plaid"):
-            try:
-                from pylate import indexes
-                self.plaid = indexes.PLAID(index_folder=index_dir, index_name="plaid", override=False, show_progress=False)
-            except Exception:
-                RAG_EVENTS.inc(event="plaid_unavailable_exact_search")
+            if not ix.plaid_current(index_dir, cfg):
+                RAG_EVENTS.inc(event="plaid_stale_exact_search")
+            else:
+                try:
+                    from pylate import indexes
+                    self.plaid = indexes.PLAID(index_folder=index_dir, index_name=ix.plaid_dir(cfg), override=False,
+                                               show_progress=False)
+                except Exception:
+                    RAG_EVENTS.inc(event="plaid_unavailable_exact_search")
         self.pos = {c["id"]: n for n, c in enumerate(chunks)}
         self.masks = {}
         self.gpu_budget_gb = gpu_budget_gb
@@ -223,6 +232,8 @@ class AxonRAG:
         self.dir = index_dir
         cfg = json.load(open(f"{index_dir}/config.json"))
         self.ax = axon or Axon(cfg["model"], device=device, revision=cfg.get("model_revision"))
+        self._reload_lock = threading.Lock()
+        self._reloader = None
         from .index import check_model
         check_model(cfg, self.ax)                                     # e.g. the server's AXON_MODEL differs
         self._s = _Loaded(index_dir, gpu_budget_gb)
@@ -236,17 +247,37 @@ class AxonRAG:
     _pos = property(lambda self: self._s.pos)
     _masks = property(lambda self: self._s.masks)
 
-    def refresh(self) -> bool:
-        """Reload if the index changed on disk (after `update` or `compact`); cheap when it has not."""
+    def changed(self) -> bool:
         try:
-            if os.stat(f"{self.dir}/config.json").st_mtime_ns == self._s.mtime:
-                return False
-            self._s = _Loaded(self.dir, self._s.gpu_budget_gb)
-            RAG_EVENTS.inc(event="index_reloaded")
-            return True
-        except Exception:
-            RAG_EVENTS.inc(event="index_reload_failed")              # keep serving the snapshot we have
+            return _stamp(self.dir) != self._s.mtime
+        except OSError:
             return False
+
+    def refresh(self) -> bool:
+        """Reload now if the index changed on disk; cheap when it has not. One reload at a time; the
+        current snapshot is served until it is replaced."""
+        if not self.changed():
+            return False
+        with self._reload_lock:
+            if not self.changed():
+                return False
+            try:
+                self._s = _Loaded(self.dir, self._s.gpu_budget_gb)
+            except Exception:
+                RAG_EVENTS.inc(event="index_reload_failed")          # keep serving the snapshot we have
+                return False
+        RAG_EVENTS.inc(event="index_reloaded")
+        return True
+
+    def refresh_async(self):
+        """For servers: reload in one background thread and return at once, so no request waits."""
+        if not self.changed() or (self._reloader is not None and self._reloader.is_alive()):
+            return None
+        with self._reload_lock:
+            if self._reloader is None or not self._reloader.is_alive():
+                self._reloader = threading.Thread(target=self.refresh, daemon=True, name="index-reload")
+                self._reloader.start()
+        return self._reloader
 
     @property
     def multi_tenant(self) -> bool:

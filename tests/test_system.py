@@ -163,10 +163,10 @@ class _FakeAxon:
             v[i, zlib.crc32(w.encode()) % self.dim] = 1.0
         return v
 
-    def encode_store(self, texts, log=None):
+    def encode_store(self, texts, log=None, path=None):
         from nyaya.store import VectorStore
         self.encoded += len(texts)
-        return VectorStore.from_docs([self._vecs(t) for t in texts], dim=self.dim)
+        return VectorStore.from_docs([self._vecs(t) for t in texts], dim=self.dim, path=path)
 
     def query_vectors(self, q):
         return self._vecs(q).numpy()
@@ -491,3 +491,114 @@ def test_answer_end_to_end_with_streaming_stub_llm(tmp_path, monkeypatch):
         assert all(s["source"] != "notice.md" for s in out["sources"]) and "PWNED" not in out["text"]
     finally:
         srv.shutdown()
+
+
+def test_store_on_disk_streams_appends_and_keeps_old_readers_valid(tmp_path):
+    from nyaya.store import VectorStore
+    g = torch.Generator().manual_seed(0)
+    docs = [torch.randn(int(n), 16, generator=g) for n in torch.randint(1, 9, (40,), generator=g)]
+    mem = VectorStore.from_docs(docs[:30], dim=16)
+    disk = VectorStore.from_docs(iter(docs[:30]), dim=16, path=str(tmp_path / "v.f16"))
+    assert disk.path and torch.equal(mem.flat, disk.flat) and torch.equal(mem.ptr, disk.ptr)
+    disk.write_meta(str(tmp_path / "v1.meta"))
+    old = VectorStore.open(str(tmp_path / "v.f16"), str(tmp_path / "v1.meta"))      # a reader, before the append
+
+    with open(tmp_path / "v.f16", "ab") as f:                                         # a crashed writer's leftovers
+        f.write(b"\x00" * 1000)
+    disk.append_to(VectorStore.from_docs(docs[30:], dim=16))
+    disk.write_meta(str(tmp_path / "v2.meta"))
+    new = VectorStore.open(str(tmp_path / "v.f16"), str(tmp_path / "v2.meta"))
+    assert len(new) == 40 and all(torch.equal(new.doc(i), docs[i].half()) for i in range(40))   # garbage overwritten
+    assert len(old) == 30 and all(torch.equal(old.doc(i), docs[i].half()) for i in range(30))   # old view intact
+    q = docs[35][:3]
+    assert new.search(q, k=1) == [35]
+    small, keep = new.compacted(path=str(tmp_path / "c.f16"))
+    assert len(small) == 40 and keep == list(range(40)) and small.path.endswith("c.f16")
+    with open(tmp_path / "v2.meta", "rb") as f:                                       # metadata claims more than the file holds
+        meta = torch.load(f, weights_only=True)
+    meta["ptr"] = torch.cat([meta["ptr"], meta["ptr"][-1:] + 10 ** 6])
+    meta["live"] = torch.cat([meta["live"], torch.ones(1, dtype=torch.bool)])
+    torch.save(meta, tmp_path / "bad.meta")
+    import pytest
+    with pytest.raises(ValueError, match="shorter"):
+        VectorStore.open(str(tmp_path / "v.f16"), str(tmp_path / "bad.meta"))
+
+
+def test_index_crash_mid_update_leaves_previous_version_and_recovers(tmp_path, monkeypatch):
+    import glob
+
+    import pytest
+
+    from nyaya import index as ix
+    src, out = tmp_path / "docs", tmp_path / "index"
+    src.mkdir()
+    for name, text in (("a.md", "alpha apples"), ("b.md", "beta bananas"), ("c.md", "gamma grapes")):
+        (src / name).write_text(text)
+    ax = _FakeAxon()
+    ix.build(str(src), str(out), ax)
+    reader = _rag(out, ax)                                                # a server holding version 1
+    (src / "b.md").unlink()
+    (src / "d.md").write_text("delta dates")
+
+    real = ix._atomic_json
+
+    def crash_on_commit(path, obj):
+        if path.endswith("config.json"):
+            raise OSError("disk full")
+        return real(path, obj)
+    monkeypatch.setattr(ix, "_atomic_json", crash_on_commit)
+    with pytest.raises(OSError):
+        ix.update(str(src), str(out), ax)
+    monkeypatch.setattr(ix, "_atomic_json", real)
+
+    cfg, chunks, store, _ = ix.load(str(out))                            # still version 1, whole and consistent
+    assert cfg["version"] == 1 and len(chunks) == len(store) == 3 and store.n_live == 3
+    assert not reader.refresh()                                           # nothing was committed
+    assert reader.retrieve("beta bananas", k=1)[0]["source"] == "b.md"
+
+    up = ix.update(str(src), str(out), ax)                                # the next writer recovers
+    assert up["version"] == 2 and up["live_chunks"] == 3 and up["chunks_added"] == 1
+    assert reader.retrieve("beta bananas", k=1)[0]["source"] == "b.md"   # a request in flight keeps its snapshot
+    t = reader.refresh_async()                                            # the server's path: one background reload
+    assert t is not None and reader.refresh_async() in (None, t)
+    t.join(10)
+    assert not reader.changed()
+    assert all(h["source"] != "b.md" for h in reader.retrieve("beta bananas", k=3))
+    assert reader.retrieve("delta dates", k=1)[0]["source"] == "d.md"
+
+    old_snapshot = _rag(out, ax)
+    ix.compact(str(out))                                                  # version 3: new data file
+    (src / "e.md").write_text("epsilon eggplant")
+    ix.update(str(src), str(out), ax)                                     # version 4: version 2's files deleted
+    names = sorted(os.path.basename(p) for p in glob.glob(str(out / "*")))
+    assert not [n for n in names if n.endswith(".tmp")]
+    assert {n for n in names if n.startswith("chunks.")} == {"chunks.v3.jsonl", "chunks.v4.jsonl"}
+    assert old_snapshot.retrieve("delta dates", k=1)[0]["source"] == "d.md"   # its files are gone, its mapping is not
+    fresh = _rag(out, ax)
+    assert fresh.cfg["version"] == 4 and fresh.store.n_live == 4
+
+
+def test_format2_index_loads_and_migrates(tmp_path):
+    import json as _json
+
+    from nyaya import index as ix
+    from nyaya.store import VectorStore
+    src, out = tmp_path / "docs", tmp_path / "index"
+    src.mkdir()
+    out.mkdir()
+    (src / "a.md").write_text("alpha apples")
+    ax = _FakeAxon()
+    chunks = [{"id": "c0", "source": "a.md", "part": 0, "text": "alpha apples"}]
+    VectorStore.from_docs([ax._vecs("alpha apples")], dim=ax.dim).save(str(out / "vectors.pt"))
+    (out / "chunks.jsonl").write_text(_json.dumps(chunks[0]) + "\n")
+    (out / "manifest.json").write_text(_json.dumps({"a.md": {"sha256": ix.sha256(str(src / "a.md")), "tenant": None,
+                                                             "chunks": ["c0"]}}))
+    (out / "config.json").write_text(_json.dumps({"format": 2, "model": "fake", "version": 3, "n": 1, "plaid": False}))
+    assert _rag(out, ax).retrieve("alpha", k=1)[0]["source"] == "a.md"   # old indexes still serve
+    (src / "b.md").write_text("beta bananas")
+    assert ix.update(str(src), str(out), ax)["version"] == 4
+    cfg = ix.read_config(str(out))
+    assert cfg["format"] == 3 and cfg["previous_files"]["vectors"] == "vectors.pt"
+    assert _rag(out, ax).retrieve("beta", k=1)[0]["source"] == "b.md"
+    ix.compact(str(out))
+    assert not (out / "vectors.pt").exists() and not (out / "chunks.jsonl").exists()   # migrated for good

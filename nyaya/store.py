@@ -2,12 +2,20 @@
 
 ColBERT keeps one vector per token, so a padded [documents x max_tokens x dim] tensor wastes most of
 its memory on padding and has to fit on one device. This store keeps every document's valid token
-vectors back to back in one flat fp16 tensor, with document boundaries in `ptr`:
+vectors back to back in one flat fp16 array, with document boundaries in `ptr`:
 
     flat [T, d]      all token vectors        ptr [N + 1]     document n = flat[ptr[n]:ptr[n+1]]
     live [N]         False for deleted documents (tombstones, removed by `compact`)
 
-Exact MaxSim search streams the flat tensor through the GPU in chunks, so the collection never has
+On disk (format 3) the vectors are a raw little-endian fp16 file, memory-mapped when loaded: a
+server starts without reading the whole file, and the operating system pages in what search
+touches. Encoding writes the file batch by batch (`writer`), so building an index never holds two
+copies of the vectors. Updates append to the file in place; a reader that opened the store
+earlier only ever reads the prefix it knows about, so appending never disturbs it. `ptr` and `live`
+are in a small metadata file written atomically. The index (nyaya.index) decides which metadata
+file is current, so a crash mid-write never mixes two versions.
+
+Exact MaxSim search streams the flat array through the GPU in chunks, so the collection never has
 to fit in GPU memory; if it does fit (under `gpu_budget_gb`) it stays resident and is not copied
 again. Re-ranking takes a small padded view of the candidates (`padded`).
 """
@@ -15,23 +23,78 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import torch
+
+FORMAT = 3
+
+
+def _mmap(path: str, n_tokens: int, dim: int) -> torch.Tensor:
+    if n_tokens == 0:
+        return torch.zeros(0, dim, dtype=torch.float16)
+    # copy-on-write: the tensor is writable for torch, the file is never modified through it
+    arr = np.memmap(path, dtype="<f2", mode="c", shape=(n_tokens, dim))
+    return torch.from_numpy(arr)
+
+
+class _Writer:
+    """Appends documents' token vectors to a raw fp16 file without keeping them in memory."""
+
+    def __init__(self, path: str, dim: int, mode: str = "wb", start_tokens: int = 0):
+        self.path, self.dim = path, dim
+        self.f = open(path, mode)
+        if mode != "wb":                                   # append: drop any tail a crashed writer left
+            self.f.truncate(start_tokens * dim * 2)
+            self.f.seek(start_tokens * dim * 2)
+        self.start, self.lens = start_tokens, []
+
+    def add(self, x: torch.Tensor):
+        if x.dim() != 2 or x.shape[1] != self.dim:
+            raise ValueError(f"expected [tokens, {self.dim}], got {tuple(x.shape)}")
+        self.f.write(x.detach().to("cpu", torch.float16).contiguous().numpy().astype("<f2", copy=False).tobytes())
+        self.lens.append(int(x.shape[0]))
+
+    def close(self):
+        self.f.flush()
+        os.fsync(self.f.fileno())
+        self.f.close()
+
+    def ptr(self, base: torch.Tensor | None = None) -> torch.Tensor:
+        own = torch.zeros(len(self.lens) + 1, dtype=torch.long)
+        own[1:] = torch.cumsum(torch.tensor(self.lens, dtype=torch.long), 0) if self.lens else 0
+        return own + self.start if base is None else torch.cat([base, own[1:] + self.start])
 
 
 class VectorStore:
-    def __init__(self, flat: torch.Tensor, ptr: torch.Tensor, live: torch.Tensor | None = None):
+    def __init__(self, flat: torch.Tensor, ptr: torch.Tensor, live: torch.Tensor | None = None,
+                 path: str | None = None):
         if ptr.dim() != 1 or int(ptr[0]) != 0 or int(ptr[-1]) != flat.shape[0]:
             raise ValueError("ptr must start at 0 and end at the number of token vectors")
         self.flat, self.ptr = flat, ptr.long()
-        self.live = live.bool() if live is not None else torch.ones(len(ptr) - 1, dtype=torch.bool)
+        self.live = live.bool().clone() if live is not None else torch.ones(len(ptr) - 1, dtype=torch.bool)
         if len(self.live) != len(self):
             raise ValueError("live mask length differs from the number of documents")
+        self.path = path                          # the data file behind `flat`, if it is memory-mapped
         self._resident = None                     # (device, flat on that device)
 
     # ------------------------------------------------------------------ construction
     @classmethod
-    def from_docs(cls, docs: list[torch.Tensor], dim: int | None = None) -> "VectorStore":
-        """docs: one [L_i, d] tensor per document (valid tokens only)."""
+    def from_docs(cls, docs, dim: int | None = None, path: str | None = None) -> "VectorStore":
+        """docs: one [L_i, d] tensor per document (valid tokens only). With `path`, the vectors go
+        straight to that file and the store is memory-mapped from it."""
+        docs = iter(docs)
+        if path is not None:
+            first = next(docs, None)
+            dim = dim or (first.shape[1] if first is not None else 128)
+            w = _Writer(path, dim)
+            for x in ([first] if first is not None else []):
+                w.add(x)
+            for x in docs:
+                w.add(x)
+            w.close()
+            ptr = w.ptr()
+            return cls(_mmap(path, int(ptr[-1]), dim), ptr, path=path)
+        docs = list(docs)
         if not docs:
             return cls(torch.zeros(0, dim or 128, dtype=torch.float16), torch.zeros(1, dtype=torch.long))
         lens = torch.tensor([len(x) for x in docs], dtype=torch.long)
@@ -46,12 +109,28 @@ class VectorStore:
         return cls.from_docs([D[i][M[i]] for i in range(D.shape[0])], dim=D.shape[-1])
 
     def append(self, other: "VectorStore") -> range:
-        """Add documents; returns their positions."""
+        """Add documents in memory; returns their positions. (On disk, use `append_to`.)"""
         start = len(self)
         self.flat = torch.cat([self.flat, other.flat.to(self.flat.dtype)])
         self.ptr = torch.cat([self.ptr, other.ptr[1:] + self.ptr[-1]])
         self.live = torch.cat([self.live, other.live])
-        self._resident = None
+        self.path, self._resident = None, None
+        return range(start, len(self))
+
+    def append_to(self, other: "VectorStore") -> range:
+        """Add documents by appending their vectors to this store's data file, which this store is
+        memory-mapped from (anything past its last vector is a crashed writer's leftovers and is
+        overwritten). Readers that mapped the file earlier keep seeing exactly what they saw."""
+        if self.path is None:
+            raise ValueError("this store is not on disk: write_data() it first")
+        start = len(self)
+        w = _Writer(self.path, self.dim, mode="r+b", start_tokens=self.n_tokens)
+        for i in range(len(other)):
+            w.add(other.doc(i))
+        w.close()
+        self.ptr = w.ptr(self.ptr)
+        self.live = torch.cat([self.live, other.live])
+        self.flat, self._resident = _mmap(self.path, self.n_tokens, self.dim), None
         return range(start, len(self))
 
     def delete(self, positions) -> int:
@@ -60,10 +139,11 @@ class VectorStore:
         self.live[idx] = False
         return n
 
-    def compacted(self) -> tuple["VectorStore", list[int]]:
-        """A new store with only live documents, and the old position of each kept document."""
+    def compacted(self, path: str | None = None) -> tuple["VectorStore", list[int]]:
+        """A new store with only live documents (written to `path` if given), and the old position
+        of each kept document."""
         keep = torch.nonzero(self.live).flatten().tolist()
-        return VectorStore.from_docs([self.doc(i) for i in keep], dim=self.dim), keep
+        return VectorStore.from_docs((self.doc(i) for i in keep), dim=self.dim, path=path), keep
 
     # ------------------------------------------------------------------ access
     def __len__(self):
@@ -72,6 +152,10 @@ class VectorStore:
     @property
     def dim(self) -> int:
         return self.flat.shape[1]
+
+    @property
+    def n_tokens(self) -> int:
+        return int(self.ptr[-1])
 
     @property
     def n_live(self) -> int:
@@ -144,14 +228,39 @@ class VectorStore:
         return [i for i, v in zip(top.indices.tolist(), top.values.tolist()) if v != float("-inf")]
 
     # ------------------------------------------------------------------ files
+    def write_data(self, data_path: str):
+        """Write the vectors to a new data file and memory-map the store from it."""
+        tmp = data_path + ".tmp"
+        w = _Writer(tmp, self.dim)
+        for i in range(len(self)):
+            w.add(self.doc(i))
+        w.close()
+        os.replace(tmp, data_path)
+        self.flat, self.path, self._resident = _mmap(data_path, self.n_tokens, self.dim), data_path, None
+
+    def write_meta(self, meta_path: str):
+        tmp = meta_path + ".tmp"
+        torch.save({"format": FORMAT, "dim": self.dim, "ptr": self.ptr, "live": self.live}, tmp)
+        os.replace(tmp, meta_path)
+
+    @classmethod
+    def open(cls, data_path: str, meta_path: str) -> "VectorStore":
+        m = torch.load(meta_path, map_location="cpu", weights_only=True)
+        n_tokens = int(m["ptr"][-1])
+        need = n_tokens * m["dim"] * 2
+        if os.path.getsize(data_path) < need:
+            raise ValueError(f"{data_path} is shorter than its metadata says ({os.path.getsize(data_path)} < {need} bytes)")
+        return cls(_mmap(data_path, n_tokens, m["dim"]), m["ptr"], m["live"], path=data_path)
+
+    # format 2 (one torch file) and the older padded format, kept for reading older indexes
     def save(self, path: str):
         tmp = path + ".tmp"
-        torch.save({"format": 2, "flat": self.flat, "ptr": self.ptr, "live": self.live}, tmp)
-        os.replace(tmp, path)                                   # never a half-written index
+        torch.save({"format": 2, "flat": self.flat.clone(), "ptr": self.ptr, "live": self.live}, tmp)
+        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: str) -> "VectorStore":
         v = torch.load(path, map_location="cpu", weights_only=True)
         if "flat" in v:
             return cls(v["flat"], v["ptr"], v.get("live"))
-        return cls.from_padded(v["D"], v["M"])                  # older padded indexes
+        return cls.from_padded(v["D"], v["M"])

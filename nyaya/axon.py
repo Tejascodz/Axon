@@ -109,18 +109,21 @@ class Axon:
             out.append([o for o, keep in zip(offs, row[:n]) if keep] if len(offs) == n else None)
         return out
 
-    def encode_store(self, documents: list[str], log=None):
+    def encode_store(self, documents: list[str], log=None, path: str | None = None):
         """Encode a (possibly large) collection into a VectorStore, batch by batch on the device,
-        keeping only each document's valid token vectors on the CPU."""
+        keeping only each document's valid token vectors. With `path` they are written straight to
+        that file as they are encoded, so memory stays flat however large the collection."""
         from .store import VectorStore
-        docs = []
-        with torch.no_grad(), self._ctx():
-            for i in range(0, len(documents), self.batch_size):
-                D, M, _, _ = self._plain.encode(documents[i:i + self.batch_size], "d")
-                docs += [D[j][M[j]].half().cpu() for j in range(D.shape[0])]
-                if log and (i // self.batch_size) % 200 == 0:
-                    log(f"encoded {min(i + self.batch_size, len(documents))}/{len(documents)}")
-        return VectorStore.from_docs(docs, dim=self.backbone.hidden)
+
+        def batches():
+            with torch.no_grad(), self._ctx():
+                for i in range(0, len(documents), self.batch_size):
+                    D, M, _, _ = self._plain.encode(documents[i:i + self.batch_size], "d")
+                    for j in range(D.shape[0]):
+                        yield D[j][M[j]].half().cpu()
+                    if log and (i // self.batch_size) % 200 == 0:
+                        log(f"encoded {min(i + self.batch_size, len(documents))}/{len(documents)}")
+        return VectorStore.from_docs(batches(), dim=self.backbone.hidden, path=path)
 
     def store_subset(self, store, ids: list[int], texts: list[str]) -> Index:
         """Candidates from a VectorStore as a small padded Index for re-ranking."""

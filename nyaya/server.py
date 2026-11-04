@@ -152,7 +152,7 @@ def pipeline():
             _state["rag"] = AxonRAG(idx, axon=_state.get("axon"))
             _state.setdefault("axon", _state["rag"].ax)
     rag = _state["rag"]
-    rag.refresh()                                   # picks up `rag update` / `rag compact`
+    rag.refresh_async()                             # picks up `rag update` / `rag compact`, never blocking a request
     return rag
 
 

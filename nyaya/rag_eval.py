@@ -45,7 +45,7 @@ def _from_json(split, cache):
     path = os.path.join(cache, f"hotpot_{split}.json")
     if not os.path.exists(path):
         os.makedirs(cache, exist_ok=True)
-        urllib.request.urlretrieve(HOTPOT_URLS[split], path + ".tmp")  # fixed https URLs  # nosec B310
+        urllib.request.urlretrieve(HOTPOT_URLS[split], path + ".tmp")  # fixed CMU dataset URLs (fallback when the HF copy fails); JSON data, never code  # nosec B310
         os.replace(path + ".tmp", path)
     for r in json.load(open(path)):
         paras = [(t, " ".join(s).strip()) for t, s in r["context"]]
