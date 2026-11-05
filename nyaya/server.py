@@ -333,7 +333,8 @@ def ready():
 
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics():
-    return REGISTRY.render()
+    # the exposition format's own content type; Prometheus 3 refuses targets that send none
+    return PlainTextResponse(REGISTRY.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.post("/rerank")

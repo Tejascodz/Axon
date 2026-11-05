@@ -16,6 +16,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/health", "/metrics"):
             body = b"" if self.path == "/health" else b"# TYPE sglang:num_queue_reqs gauge\nsglang:num_queue_reqs 0\n"
             self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")   # Prometheus 3 requires one
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
