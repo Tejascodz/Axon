@@ -155,7 +155,7 @@ def musique(a, n=500):
     return out
 
 
-def corpus_of(items):
+def corpus_of(items, max_words=None):
     """Unique paragraphs as index chunks, and each item's gold positions."""
     from nyaya import rag_eval
     chunks, pos = [], {}
@@ -165,7 +165,7 @@ def corpus_of(items):
             key = (t, x[:200])
             if key not in pos:
                 pos[key] = len(chunks)
-                chunks.append({"source": t, "text": rag_eval.passage(t, x)})
+                chunks.append({"source": t, "text": rag_eval.passage(t, x, max_words or rag_eval.MAX_WORDS)})
             is_gold = (j in it["gold_idx"]) if "gold_idx" in it else (t in it["gold"])
             if is_gold:
                 it["gold_pos"].add(pos[key])

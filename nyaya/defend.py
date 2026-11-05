@@ -2,6 +2,9 @@
 carry a false answer (PoisonedRAG-style attacks). Round 9 measures both, including what they cost on
 clean questions.
 
+near duplicates   An attacker plants several passages making the same claim, so they fill most of
+                  the top k. Keeping only the best-ranked passage of each cluster of near-identical
+                  passages (by vector similarity) leaves the attacker one place at most.
 echo filter       A planted passage usually restates the question to rank first for it. Passages
                   that contain most of the question's word sequences are withheld. Cheap, but an
                   attacker who paraphrases the question avoids it.
@@ -74,3 +77,22 @@ def isolate_and_vote(question: str, sources: list[dict], min_votes: int = 2, **l
     clear = bool(top) and len(top) >= min_votes and (len(groups) == 1 or len(top) > len(groups[1]))
     return {"majority": Counter(top).most_common(1)[0][0] if clear else None, "votes": [len(g) for g in groups],
             "per_source": answers}
+
+
+def mean_vector(store, position):
+    v = store.doc(position).float().mean(0)
+    return v / (v.norm() + 1e-9)
+
+
+def drop_near_duplicates(positions: list[int], store, threshold: float) -> tuple[list[int], list[int]]:
+    """Keep, in rank order, each passage whose mean token vector is below `threshold` cosine similarity
+    to every passage kept before it; returns (kept, dropped)."""
+    kept, dropped, vecs = [], [], []
+    for p in positions:
+        v = mean_vector(store, p)
+        if any(float(v @ u) >= threshold for u in vecs):
+            dropped.append(p)
+        else:
+            kept.append(p)
+            vecs.append(v)
+    return kept, dropped

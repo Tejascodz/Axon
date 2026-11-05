@@ -19,13 +19,23 @@ def tokenize(s: str) -> list[str]:
     return out
 
 
+def tokenize_english(s: str) -> list[str]:
+    """Lucene's English analysis: lower case, stopwords removed, Porter stems."""
+    from .stem import STOPWORDS, stem
+    return [stem(t) for t in tokenize(s) if t not in STOPWORDS]
+
+
+ANALYZERS = {"plain": tokenize, "english": tokenize_english}
+
+
 class BM25:
-    def __init__(self, docs: list[str], k1: float = 1.2, b: float = 0.75):
+    def __init__(self, docs: list[str], k1: float = 1.2, b: float = 0.75, analyzer: str = "plain"):
         self.k1, self.b, self.N = k1, b, len(docs)
+        self.tok = ANALYZERS[analyzer]
         post: dict[str, tuple[list, list]] = collections.defaultdict(lambda: ([], []))
         self.dl = np.zeros(self.N, dtype=np.float32)
         for i, d in enumerate(docs):
-            tf = collections.Counter(tokenize(d))
+            tf = collections.Counter(self.tok(d))
             self.dl[i] = sum(tf.values())
             for t, c in tf.items():
                 post[t][0].append(i)
@@ -37,7 +47,7 @@ class BM25:
 
     def scores(self, q: str) -> np.ndarray:
         s = np.zeros(self.N, dtype=np.float32)
-        for t in set(tokenize(q)):
+        for t in set(self.tok(q)):
             if t not in self.post:
                 continue
             ids, tf = self.post[t]

@@ -196,7 +196,7 @@ def _stamp(index_dir):
 class _Loaded:
     """One consistent snapshot of an index folder: config.json first, then exactly the files it names."""
 
-    def __init__(self, index_dir, gpu_budget_gb):
+    def __init__(self, index_dir, gpu_budget_gb, bm25_analyzer=None):
         from . import index as ix
         for attempt in range(5):
             try:
@@ -209,7 +209,8 @@ class _Loaded:
                 time.sleep(0.5)
         self.cfg, self.chunks, self.store, self.mtime = cfg, chunks, store, mtime
         self.live = store.live.numpy().astype(bool)
-        self.bm25 = BM25([c["text"] for c in chunks])               # deleted chunks are masked, not removed
+        self.bm25_analyzer = bm25_analyzer or cfg.get("bm25_analyzer") or os.environ.get("AXON_BM25", "plain")
+        self.bm25 = BM25([c["text"] for c in chunks], analyzer=self.bm25_analyzer)   # deleted chunks are masked
         self.plaid = None
         if cfg.get("plaid"):
             if not ix.plaid_current(index_dir, cfg):
@@ -227,16 +228,19 @@ class _Loaded:
 
 
 class AxonRAG:
-    def __init__(self, index_dir: str, axon=None, device: str | None = None, gpu_budget_gb: float = 6.0):
+    def __init__(self, index_dir: str, axon=None, device: str | None = None, gpu_budget_gb: float = 6.0,
+                 bm25_analyzer: str | None = None, bm25_weight: float = 1.0):
+        """bm25_analyzer: "plain" or "english" (stopwords and Porter stems; default from the index or
+        AXON_BM25). bm25_weight: BM25's weight in the fusion with ColBERT (0 = ColBERT only)."""
         from .axon import Axon
-        self.dir = index_dir
+        self.dir, self.bm25_analyzer, self.bm25_weight = index_dir, bm25_analyzer, bm25_weight
         cfg = json.load(open(f"{index_dir}/config.json"))
         self.ax = axon or Axon(cfg["model"], device=device, revision=cfg.get("model_revision"))
         self._reload_lock = threading.Lock()
         self._reloader = None
         from .index import check_model
         check_model(cfg, self.ax)                                     # e.g. the server's AXON_MODEL differs
-        self._s = _Loaded(index_dir, gpu_budget_gb)
+        self._s = _Loaded(index_dir, gpu_budget_gb, bm25_analyzer)
 
     # the current snapshot; `refresh` swaps it in one assignment, so a request in flight keeps its own
     cfg = property(lambda self: self._s.cfg)
@@ -262,7 +266,7 @@ class AxonRAG:
             if not self.changed():
                 return False
             try:
-                self._s = _Loaded(self.dir, self._s.gpu_budget_gb)
+                self._s = _Loaded(self.dir, self._s.gpu_budget_gb, self.bm25_analyzer)
             except Exception:
                 RAG_EVENTS.inc(event="index_reload_failed")          # keep serving the snapshot we have
                 return False
@@ -312,12 +316,19 @@ class AxonRAG:
 
     def _fused(self, s, q, depth, rrf_k, approximate, allowed):
         fused = defaultdict(float)
-        for ranked in (s.bm25.search(q, depth, allowed=allowed), self.first_stage(q, depth, approximate, allowed)):
+        lists = [(self.first_stage(q, depth, approximate, allowed), 1.0)]
+        if self.bm25_weight > 0:
+            lists.append((s.bm25.search(q, depth, allowed=allowed), self.bm25_weight))
+        for ranked, w in lists:
             for r, i in enumerate(ranked, 1):
-                fused[i] += 1.0 / (rrf_k + r)
+                fused[i] += w / (rrf_k + r)
         return [i for i in sorted(fused, key=fused.get, reverse=True)[:depth] if allowed[i]], fused
 
+    LONG_QUERY_WORDS = 40
+
     def _reranked(self, s, q, cand, k, conditions=None, method=None):
+        if method == "auto":            # clause grouping helps short questions, hurts long posts (round 8, BRIGHT)
+            method = "colbert" if len(q.split()) > self.LONG_QUERY_WORDS else None
         sub = self.ax.store_subset(s.store, cand, [s.chunks[i]["text"] for i in cand])
         return [(cand[r.index], r) for r in self.ax.rerank(q, sub, top_k=k, conditions=conditions, method=method)]
 
@@ -417,12 +428,20 @@ class AxonRAG:
 
     def answer(self, q: str, k: int = 5, scan: bool = True, certificate: bool = True, max_tokens: int = 256,
                tenant: str | None = None, require_citation: bool = True, verifier=None, retrieve_kw: dict | None = None,
-               echo_filter: bool = False, vote: bool = False, **llm_kw) -> dict:
+               echo_filter: bool = False, vote: bool = False, dedupe: float | None = None, **llm_kw) -> dict:
         """`verifier` (nyaya.verify.Verifier): also withhold answers whose claims the cited sources do
         not support (claim-level check), not only answers without citations.
         `retrieve_kw`: options for `retrieve`, e.g. {"hops": 2}.
-        `echo_filter`, `vote`: defences against planted documents (nyaya.defend); off by default."""
-        hits = self.retrieve(q, k=k, tenant=tenant, **(retrieve_kw or {}))
+        `echo_filter`, `vote`, `dedupe` (a cosine threshold): defences against planted documents
+        (nyaya.defend); off by default."""
+        hits = self.retrieve(q, k=2 * k if dedupe else k, tenant=tenant, **(retrieve_kw or {}))
+        if dedupe:
+            from .defend import drop_near_duplicates
+            s = self._s
+            kept, dropped = drop_near_duplicates([s.pos[h["id"]] for h in hits], s.store, dedupe)
+            RAG_EVENTS.inc(len(dropped), event="near_duplicate_dropped")
+            keep = {s.chunks[p]["id"] for p in kept[:k]}
+            hits = [h for h in hits if h["id"] in keep]
         sources = [{"id": h["id"], "title": h.get("source", ""), "text": h["text"]} for h in hits]
         withheld = []
         if scan:

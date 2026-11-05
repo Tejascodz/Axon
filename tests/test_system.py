@@ -298,7 +298,7 @@ def test_server_tenant_keys_pick_the_tenant(monkeypatch):
     seen = []
 
     class FakeRag:
-        def answer(self, q, k=5, tenant=None):
+        def answer(self, q, k=5, tenant=None, **kw):
             seen.append(tenant)
             return {"answer": "x"}
     monkeypatch.setattr(server, "pipeline", lambda: FakeRag())
@@ -403,7 +403,7 @@ def test_server_request_ids_bounded_labels_backpressure_and_readiness(monkeypatc
         def refresh(self):
             return False
 
-        def answer(self, q, k=5, tenant=None):
+        def answer(self, q, k=5, tenant=None, **kw):
             entered.set()
             gate.wait(5)
             return {"answer": "x"}
@@ -798,3 +798,24 @@ def test_poisoning_defences(monkeypatch):
     v = defend.isolate_and_vote(q, srcs)
     assert defend.agree(v["majority"], "1784") and v["votes"] == [2, 1]          # one planted source is outvoted
     assert defend.isolate_and_vote(q, srcs[:2])["majority"] is None              # 1 vs 1: no majority
+
+
+def test_near_duplicate_filter_and_new_retrieval_options(tmp_path):
+    from nyaya import defend
+    from nyaya import index as ix
+    from nyaya.bm25 import BM25, tokenize_english
+    from nyaya.stem import stem
+    assert stem("generalizations") == "gener" and stem("hopping") == "hop"
+    assert tokenize_english("The cities were founded") == ["citi", "were", "found"]
+    b = BM25(["The city was founded in 1784.", "Rivers flow."], analyzer="english")
+    assert b.search("founding cities", k=1) == [0]                            # stems match across word forms
+    docs = [{"source": f"d{i}", "text": t} for i, t in enumerate(
+        ["alpha beta gamma delta", "alpha beta gamma delta", "epsilon zeta eta theta", "alpha beta gamma delta epsilon"])]
+    ax = _FakeAxon()
+    ix.build(docs, str(tmp_path / "i"), ax)
+    rag = _rag(tmp_path / "i", ax)
+    kept, dropped = defend.drop_near_duplicates([0, 1, 2, 3], rag.store, threshold=0.99)
+    assert kept == [0, 2, 3] and dropped == [1]                                # the exact copy goes, near ones stay
+    rag.bm25_weight = 0.0                                                      # ColBERT only
+    assert rag.retrieve("epsilon zeta", k=1)[0]["source"] == "d2"
+    assert rag.retrieve(" ".join(["alpha"] * 50), k=1, method="auto")         # long query: plain scoring path

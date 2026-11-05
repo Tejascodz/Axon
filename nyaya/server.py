@@ -32,6 +32,12 @@ Protection
     answers. AXON_VERIFY_METHOD=nli (default; AXON_VERIFY_MODEL, AXON_VERIFY_THRESHOLD,
     AXON_VERIFY_DEVICE) or llm (the generator judges each claim). Off by default: in round 7 the NLI
     check withheld more right answers than wrong ones.
+  * AXON_HOPS=2 (default): a second retrieval step that follows documents named in the first
+    passages (round 8: both gold paragraphs in the top 5 on HotpotQA 0.826 -> 0.882, +60 ms).
+    AXON_HOPS=1 turns it off.
+  * AXON_ECHO_FILTER=1 (default): withhold retrieved passages that restate the question, the usual
+    shape of a planted document (round 9: false answers 17% -> 0% for that attack, exact match on
+    clean questions 0.27 -> 0.26). AXON_ECHO_FILTER=0 turns it off.
   * AXON_DEVICE / AXON_VERIFY_DEVICE (e.g. cuda:0, cuda:1, cpu): where the retrieval model and the
     checker run. Keep them off the LLM server's GPU: sharing one 15 GB GPU caused out-of-memory errors.
   * Request sizes are capped (AXON_MAX_DOCS, AXON_MAX_CHARS) so one request cannot exhaust memory.
@@ -362,7 +368,11 @@ def ask(req: AskRequest, request: Request):
         _inflight[0] += 1
     try:
         v = verifier()
-        out = pipeline().answer(req.question, k=req.k, tenant=request.state.tenant, **({"verifier": v} if v else {}))
+        hops = int(os.environ.get("AXON_HOPS", "2"))
+        out = pipeline().answer(req.question, k=req.k, tenant=request.state.tenant,
+                                retrieve_kw={"hops": hops, "hop_mode": "titles", "hop_slots": 2} if hops > 1 else None,
+                                echo_filter=os.environ.get("AXON_ECHO_FILTER", "1") == "1",
+                                **({"verifier": v} if v else {}))
         out["request_id"] = request.state.request_id
         return out
     except HTTPException:
