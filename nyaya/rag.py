@@ -344,7 +344,9 @@ class AxonRAG:
         return hits
 
     def answer(self, q: str, k: int = 5, scan: bool = True, certificate: bool = True, max_tokens: int = 256,
-               tenant: str | None = None, require_citation: bool = True, **llm_kw) -> dict:
+               tenant: str | None = None, require_citation: bool = True, verifier=None, **llm_kw) -> dict:
+        """`verifier` (nyaya.verify.Verifier): also withhold answers whose claims the cited sources do
+        not support (claim-level check), not only answers without citations."""
         hits = self.retrieve(q, k=k, tenant=tenant)
         sources = [{"id": h["id"], "title": h.get("source", ""), "text": h["text"]} for h in hits]
         withheld = []
@@ -372,6 +374,14 @@ class AxonRAG:
         if require_citation and not chk.abstained and not chk.cited:
             chk = guards.require_citation(chk)
             RAG_EVENTS.inc(event="uncited_answer_withheld")
+        verdict = None
+        if verifier is not None and not chk.abstained:
+            t0 = time.perf_counter()
+            verdict = verifier.check(chk.text, sources)
+            RAG_STAGE.observe(time.perf_counter() - t0, stage="verify")
+            if not verdict.supported:
+                chk = guards.withhold(guards.UNSUPPORTED_TEXT)
+                RAG_EVENTS.inc(event="unsupported_answer_withheld")
         RAG_EVENTS.inc(event="abstained" if chk.abstained else "answered")
         if chk.invalid_citations:
             RAG_EVENTS.inc(len(chk.invalid_citations), event="invalid_citation_removed")
@@ -379,6 +389,8 @@ class AxonRAG:
                 "sources": [{k2: h[k2] for k2 in ("id", "source", "text", "weakest", "conditions") if k2 in h}
                             for h in hits if h["id"] in {s["id"] for s in sources}],
                 "withheld": withheld, "certificate": cert,
+                "verification": None if verdict is None else {"supported": verdict.supported, "reason": verdict.reason,
+                                                              "claims": [(c.text, c.cited, c.score) for c in verdict.claims]},
                 "timing": {k2: t[k2] for k2 in ("ttft", "tpot", "e2e", "completion_tokens", "prompt_tokens")}}
 
 

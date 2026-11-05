@@ -28,6 +28,8 @@ Protection
   * AXON_RATE_PER_MIN: requests per minute per client address (default 120; 0 disables; /metrics exempt).
   * AXON_MAX_INFLIGHT: /ask requests served at once (default 16); more get 503 at once instead of
     queueing without bound (back-pressure).
+  * AXON_VERIFY=1: check every answer's claims against the passages they cite (nyaya.verify, an NLI
+    model; AXON_VERIFY_MODEL, AXON_VERIFY_THRESHOLD) and withhold unsupported answers.
   * Request sizes are capped (AXON_MAX_DOCS, AXON_MAX_CHARS) so one request cannot exhaust memory.
   * Metrics are labelled by route, never by the raw URL, so unknown paths cannot grow memory.
   * Binds to localhost by default; put it behind TLS before exposing it.
@@ -59,6 +61,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .axon import METHODS, Axon
+from .llm import CircuitOpen
 from .metrics import REGISTRY
 
 MAX_DOCS = int(os.environ.get("AXON_MAX_DOCS", "500"))
@@ -156,9 +159,22 @@ def pipeline():
     return rag
 
 
+def verifier():
+    if os.environ.get("AXON_VERIFY") != "1":
+        return None
+    with _load_lock:
+        if "verifier" not in _state:
+            from .verify import DEFAULT_MODEL, Verifier
+            _state["verifier"] = Verifier(os.environ.get("AXON_VERIFY_MODEL", DEFAULT_MODEL),
+                                          threshold=float(os.environ.get("AXON_VERIFY_THRESHOLD", "0.5")),
+                                          revision=os.environ.get("AXON_VERIFY_REVISION") or None)
+        return _state["verifier"]
+
+
 def _preload():
     try:
         model()
+        verifier()
         if os.environ.get("AXON_INDEX"):
             pipeline()
         _state["ready"] = True
@@ -335,13 +351,16 @@ def ask(req: AskRequest, request: Request):
     with _inflight_lock:
         _inflight[0] += 1
     try:
-        out = pipeline().answer(req.question, k=req.k, tenant=request.state.tenant)
+        v = verifier()
+        out = pipeline().answer(req.question, k=req.k, tenant=request.state.tenant, **({"verifier": v} if v else {}))
         out["request_id"] = request.state.request_id
         return out
     except HTTPException:
         raise
     except PermissionError:
         raise HTTPException(403, "this index is multi-tenant: use a tenant key")
+    except CircuitOpen:                          # generator down: fail fast, tell the client when to retry
+        raise HTTPException(503, "generator unavailable, retry shortly", headers={"Retry-After": "10"})
     except Exception as e:                       # generator unreachable, etc.: no internals in the reply
         log.info(json.dumps({"event": "ask_failed", "request_id": request.state.request_id,
                              "error": type(e).__name__}))

@@ -21,7 +21,9 @@ ones are deleted.
 
 `update` compares files by SHA-256: new files are chunked and encoded, removed files' chunks are
 marked deleted (hidden from search at once), changed files are both. Nothing else is re-encoded.
-`compact` drops deleted chunks for good without re-encoding anything.
+`compact` drops deleted chunks for good without re-encoding anything. Chunk ids never change (new
+chunks get the next unused id), so compaction keeps the PLAID index: deleted chunks already left it
+at update time. Only a PLAID index that no longer matches is rebuilt.
 Indexes written by earlier releases (format 2: chunks.jsonl, manifest.json, vectors.pt) load as
 they are and are migrated by the next update or compaction.
 """
@@ -284,7 +286,7 @@ def build(src_or_chunks, out: str, axon, plaid: bool = False, tenants_from_dirs:
         data_name = f"vectors.{version}.f16"
         store = axon.encode_store([c["text"] for c in chunks], log=log, path=os.path.join(out, data_name))
         cfg = {"model": axon.model_name, "model_revision": getattr(axon, "revision", None), "version": version,
-               "plaid": False, "skipped": refused, "tenants_from_dirs": tenants_from_dirs,
+               "plaid": False, "skipped": refused, "tenants_from_dirs": tenants_from_dirs, "next_id": len(chunks),
                "source": src_or_chunks if isinstance(src_or_chunks, str) else None}
         if old.get("files"):
             cfg["files"] = old["files"]                               # becomes previous_files at commit
@@ -317,6 +319,7 @@ def update(src: str, out: str, axon, log=None) -> dict:
         for r in removed:
             del manifest[r]
         new = []
+        next_id = cfg.get("next_id", len(chunks))
         for r in changed + added:
             p, tenant = on_disk[r]
             try:
@@ -326,7 +329,8 @@ def update(src: str, out: str, axon, log=None) -> dict:
                 manifest.pop(r, None)                                  # its old chunks are deleted above
                 continue
             for c in recs:
-                c["id"] = f"c{len(chunks) + len(new)}"
+                c["id"] = f"c{next_id}"
+                next_id += 1
                 new.append(c)
             manifest[r] = {"sha256": hashes[r], "tenant": tenant, "chunks": [c["id"] for c in recs]}
         if not gone and not new:                                        # nothing changed: nothing to commit
@@ -361,7 +365,7 @@ def update(src: str, out: str, axon, log=None) -> dict:
                     _mark_plaid(out, cfg["plaid_dir"], cfg["version"])
                 except Exception as e:                                 # fall back to exact search, never wrong
                     cfg.update(plaid=False, plaid_error=f"update failed, exact search in use: {repr(e)[:200]}")
-        cfg["skipped"] = refused
+        cfg["skipped"], cfg["next_id"] = refused, next_id
         _commit(out, cfg, chunks, store, manifest, data_name)
     return {**report, "chunks_added": len(new), "chunks_deleted": len(gone), "live_chunks": store.n_live,
             "dead_chunks": len(store) - store.n_live, "version": cfg["version"], "seconds": round(time.time() - t0, 2)}
@@ -370,27 +374,35 @@ def update(src: str, out: str, axon, log=None) -> dict:
 # --------------------------------------------------------------------------- compact
 
 def compact(out: str) -> dict:
-    """Drop deleted chunks for good and renumber; no re-encoding. Rebuilds PLAID if the index has
-    (or had) one."""
+    """Drop deleted chunks for good; no re-encoding. Chunk ids are kept, so a PLAID index that
+    matches the index is kept as it is (its deleted chunks were removed at update time); one that
+    does not match (or a failed one) is rebuilt."""
     t0 = time.time()
     with locked(out):
         cfg, chunks, store, manifest = load(out)
         before = len(chunks)
+        plaid_ok = plaid_current(out, cfg)
         previous_plaid = plaid_dir(cfg) if cfg.get("plaid") else None
+        cfg.setdefault("next_id", 1 + max((int(c["id"][1:]) for c in chunks if c["id"][1:].isdigit()), default=-1))
         cfg["version"] += 1
         data_name = f"vectors.{cfg['version']}.f16"
         new_store, keep = store.compacted(path=os.path.join(out, data_name))
-        remap, kept = {}, []
-        for n, old in enumerate(keep):
+        kept = []
+        for old in keep:
             c = dict(chunks[old])
             c.pop("deleted", None)
-            remap[c["id"]] = f"c{n}"
-            c["id"] = f"c{n}"
             kept.append(c)
+        live_ids = {c["id"] for c in kept}
         for m in manifest.values():
-            m["chunks"] = [remap[cid] for cid in m["chunks"] if cid in remap]
-        if cfg.get("plaid") or cfg.get("plaid_error"):
+            m["chunks"] = [cid for cid in m["chunks"] if cid in live_ids]
+        plaid = "none"
+        if cfg.get("plaid") and plaid_ok:
+            cfg["plaid_dir"] = plaid_dir(cfg)
+            _mark_plaid(out, cfg["plaid_dir"], cfg["version"])
+            plaid = "kept"
+        elif cfg.get("plaid") or cfg.get("plaid_error"):
             _plaid_build(out, cfg, kept, new_store)
+            plaid = "rebuilt" if cfg.get("plaid") else "failed"
         _commit(out, cfg, kept, new_store, manifest, data_name, previous_plaid)
-    return {"chunks_before": before, "chunks_after": len(kept), "version": cfg["version"],
+    return {"chunks_before": before, "chunks_after": len(kept), "version": cfg["version"], "plaid": plaid,
             "seconds": round(time.time() - t0, 2)}

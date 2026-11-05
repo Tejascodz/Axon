@@ -602,3 +602,105 @@ def test_format2_index_loads_and_migrates(tmp_path):
     assert _rag(out, ax).retrieve("beta", k=1)[0]["source"] == "b.md"
     ix.compact(str(out))
     assert not (out / "vectors.pt").exists() and not (out / "chunks.jsonl").exists()   # migrated for good
+
+
+def test_compaction_keeps_ids_and_plaid(tmp_path):
+    import pytest
+    pytest.importorskip("pylate")
+    import random as _r
+
+    from nyaya import index as ix
+    rng = _r.Random(0)
+    words = [f"w{i}" for i in range(2000)]
+    src, out = tmp_path / "docs", tmp_path / "index"
+    src.mkdir()
+    for i in range(300):
+        (src / f"d{i:03d}.txt").write_text(" ".join(rng.choice(words) for _ in range(30)))
+    ax = _FakeAxon()
+    assert ix.build(str(src), str(out), ax, plaid=True)["plaid"]
+    for i in range(5):
+        (src / f"d{i:03d}.txt").unlink()
+    (src / "new.txt").write_text("brand new passage about zebras")
+    ix.update(str(src), str(out), ax)
+    ids_before = {c["id"] for c in ix.load(str(out))[1] if not c.get("deleted")}
+    c = ix.compact(str(out))
+    cfg, chunks, _, _ = ix.load(str(out))
+    assert c["plaid"] == "kept" and ix.plaid_current(str(out), cfg)       # no re-clustering
+    assert {ch["id"] for ch in chunks} == ids_before                         # ids are stable
+    (src / "newer.txt").write_text("another passage about giraffes")
+    ix.update(str(src), str(out), ax)
+    ids = [ch["id"] for ch in ix.load(str(out))[1]]
+    assert len(ids) == len(set(ids))                                         # no id is reused
+    rag = _rag(out, ax)
+    assert rag.plaid is not None
+    assert rag.retrieve("giraffes", k=1, approximate=True)[0]["source"] == "newer.txt"
+
+
+def test_llm_retries_transient_failures_and_breaker_opens(monkeypatch):
+    import urllib.error
+
+    import pytest
+
+    from nyaya import llm
+    calls = {"n": 0}
+
+    class Resp:
+        def read(self):
+            return b'{"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def flaky(base, body, timeout):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise urllib.error.HTTPError("u", 503, "busy", {}, None)
+        return Resp()
+    monkeypatch.setattr(llm, "_send", flaky)
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    monkeypatch.setenv("NYAYA_LLM_RETRIES", "2")
+    monkeypatch.setattr(llm, "BREAKER", llm._Breaker())
+    assert llm.chat([{"role": "user", "content": "hi"}], base="http://localhost:1/v1") == "ok"
+    assert calls["n"] == 3                                                   # two retries, then success
+
+    def bad_request(base, body, timeout):
+        raise urllib.error.HTTPError("u", 400, "bad", {}, None)
+    monkeypatch.setattr(llm, "_send", bad_request)
+    with pytest.raises(urllib.error.HTTPError):
+        llm.chat([{"role": "user", "content": "hi"}], base="http://localhost:1/v1")
+    assert llm.BREAKER.fails == 0                                            # client errors are not outages
+
+    def down(base, body, timeout):
+        raise ConnectionRefusedError("down")
+    monkeypatch.setattr(llm, "_send", down)
+    monkeypatch.setenv("NYAYA_LLM_BREAKER_FAILURES", "2")
+    for _ in range(2):
+        with pytest.raises(ConnectionRefusedError):
+            llm.chat([{"role": "user", "content": "hi"}], base="http://localhost:1/v1")
+    with pytest.raises(llm.CircuitOpen):                                     # now refused at once, no request sent
+        llm.chat([{"role": "user", "content": "hi"}], base="http://localhost:1/v1")
+
+
+def test_claims_split_and_verdict_with_stub_nli():
+    from nyaya import verify
+    reply = "Answer: 1922\nEvidence: The war ended in October 1922 [c3]. The war began in 1917 [c1][c3]."
+    cs = verify.claims(reply)
+    assert [(c.text, c.cited) for c in cs] == [("The war ended in October 1922.", ["c3"]),
+                                               ("The war began in 1917.", ["c1", "c3"])]
+    assert verify.answer_value(reply) == "1922"
+    assert verify.claims("Answer: INSUFFICIENT\nEvidence: The sources do not contain the answer.") == []
+
+    v = verify.Verifier.__new__(verify.Verifier)                             # NLI stub: entailed iff every word appears
+    v.threshold = 0.5
+    v.entailment = lambda pairs: [float(all(w in p.lower() for w in verify._norm(h).split())) for p, h in pairs]
+    src = [{"id": "c1", "text": "The war began in 1917."}, {"id": "c3", "text": "The war ended in October 1922."}]
+    assert v.check(reply, src).supported
+    wrong = "Answer: 1923\nEvidence: The war ended in October 1923 [c3]."
+    r = v.check(wrong, src)
+    assert not r.supported and r.claims[0].supported is False and r.answer_in_sources is False
+    assert not v.check("Answer: 1922\nEvidence: The war ended in October 1922.", src).supported   # uncited claim
+    assert v.check("Answer: INSUFFICIENT\nEvidence: missing.", src).abstained
+    assert verify.calibrate([0.9, 0.8, 0.3, 0.2], [True, True, False, False]) == 0.8

@@ -175,6 +175,15 @@ WITHHELD_TEXT = (f"Answer: {INSUFFICIENT}\n"
                  "Evidence: A draft answer cited no source, so it was withheld.")
 
 
+UNSUPPORTED_TEXT = (f"Answer: {INSUFFICIENT}\n"
+                    "Evidence: A draft answer made claims its cited sources do not support, so it was withheld.")
+
+
+def withhold(text: str) -> Checked:
+    """A refusal in the place of an answer that failed a check."""
+    return Checked(INSUFFICIENT, True, text, [], [], [], True)
+
+
 def require_citation(chk: Checked) -> Checked:
     """No citation, no answer: an answer that cites none of the sources shown is replaced by a
     refusal, so every answer that reaches a user can be traced to a source."""

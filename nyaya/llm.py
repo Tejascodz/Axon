@@ -5,6 +5,12 @@ Environment
   NYAYA_LLM_BASE_URL   e.g. http://localhost:8000/v1 (vLLM) or a hosted endpoint
   NYAYA_LLM_API_KEY    API key if the endpoint needs one (only sent over https, or to localhost)
   NYAYA_LLM_MODEL      model name the endpoint expects
+  NYAYA_LLM_RETRIES    retries of a request that failed before any output (connection error, 429,
+                       500/502/503/504), with exponential backoff and jitter (default 2)
+  NYAYA_LLM_BREAKER_FAILURES / NYAYA_LLM_BREAKER_SECONDS
+                       circuit breaker: after this many consecutive failed requests (default 5), calls
+                       fail at once with CircuitOpen for this many seconds (default 30) instead of
+                       piling up on a server that is down; then one trial request decides
 
 Timing returned by `timed_chat` (all in seconds, measured on the client):
   ttft      time to first token: request sent -> first non-empty content chunk
@@ -16,9 +22,50 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import socket
+import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
+
+from .metrics import REGISTRY
+
+RETRIES = REGISTRY.counter("llm_retries_total", "LLM requests retried after a transient failure")
+FAILURES = REGISTRY.counter("llm_failures_total", "LLM requests that failed after all retries", ["kind"])
+BREAKER_REJECTED = REGISTRY.counter("llm_breaker_rejected_total", "LLM calls refused at once while the breaker was open")
+_RETRIABLE_HTTP = {429, 500, 502, 503, 504}
+
+
+class CircuitOpen(RuntimeError):
+    """The generator failed repeatedly; calls are refused for a short cool-down."""
+
+
+class _Breaker:
+    def __init__(self):
+        self.lock, self.fails, self.open_until = threading.Lock(), 0, 0.0
+
+    def check(self):
+        with self.lock:
+            if time.monotonic() < self.open_until:
+                BREAKER_REJECTED.inc()
+                raise CircuitOpen(f"generator unavailable; retry in {self.open_until - time.monotonic():.0f} s")
+
+    def success(self):
+        with self.lock:
+            self.fails = 0
+
+    def failure(self):
+        with self.lock:
+            self.fails += 1
+            if self.fails >= int(os.environ.get("NYAYA_LLM_BREAKER_FAILURES", "5")):
+                self.open_until = time.monotonic() + float(os.environ.get("NYAYA_LLM_BREAKER_SECONDS", "30"))
+
+
+BREAKER = _Breaker()
+REGISTRY.gauge("llm_breaker_open", "1 while the circuit breaker refuses LLM calls",
+               fn=lambda: 1.0 if time.monotonic() < BREAKER.open_until else 0.0)
 
 
 def endpoint(base: str | None = None) -> str:
@@ -32,12 +79,37 @@ def endpoint(base: str | None = None) -> str:
     return base
 
 
-def _request(base, body, timeout):
+def _send(base, body, timeout):
     headers = {"Content-Type": "application/json"}
     if os.environ.get("NYAYA_LLM_API_KEY"):
         headers["Authorization"] = f"Bearer {os.environ['NYAYA_LLM_API_KEY']}"
     req = urllib.request.Request(f"{base}/chat/completions", data=json.dumps(body).encode(), headers=headers)
     return urllib.request.urlopen(req, timeout=timeout)  # base comes from endpoint(), http(s) only  # nosec B310
+
+
+def _request(base, body, timeout):
+    """Open the response, retrying transient failures that happen before any output. A request that
+    fails mid-stream is not retried (part of the answer was already used). Client errors (4xx other
+    than 429) are neither retried nor counted against the generator."""
+    BREAKER.check()
+    attempts = 1 + max(0, int(os.environ.get("NYAYA_LLM_RETRIES", "2")))
+    for i in range(attempts):
+        try:
+            r = _send(base, body, timeout)
+            BREAKER.success()
+            return r
+        except urllib.error.HTTPError as e:
+            if e.code not in _RETRIABLE_HTTP:
+                raise
+            err, kind = e, f"http_{e.code}"
+        except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout) as e:
+            err, kind = e, type(e).__name__
+        if i == attempts - 1:
+            FAILURES.inc(kind=kind if kind.startswith("http_") else "connection")
+            BREAKER.failure()
+            raise err
+        RETRIES.inc()
+        time.sleep(min(2.0, 0.25 * 2 ** i) * (0.5 + random.random()))  # jitter: retries do not arrive in step  # nosec B311
 
 
 def _body(messages, model, temperature, max_tokens, stream, extra):
