@@ -756,3 +756,26 @@ def test_axon_is_safe_to_call_from_many_threads(tmp_path):
         return True
     with ThreadPoolExecutor(16) as ex:
         assert all(ex.map(work, range(400)))
+
+
+def test_second_hop_reaches_the_bridge_passage(tmp_path):
+    """Round 8: the question names A; A's passage names B; B holds the answer but shares no words with
+    the question. One retrieval step misses B; following A's link (or searching with A's text) finds it."""
+    from nyaya import index as ix
+    docs = [{"source": "Lake Vostra", "text": "Lake Vostra lies near the town of Kelmar Harbour and feeds the river."},
+            {"source": "Kelmar Harbour", "text": "Kelmar Harbour was founded in 1784 by fishermen from the north."}]
+    rng = __import__("random").Random(0)
+    docs += [{"source": f"Filler {i}", "text": "town near lake " + " ".join(f"w{rng.randrange(500)}" for _ in range(9))}
+             for i in range(40)]                                       # share 3 words with the question; the bridge shares fewer
+    ax = _FakeAxon()
+    ix.build(docs, str(tmp_path / "idx"), ax)
+    rag = _rag(tmp_path / "idx", ax)
+    q = "When was the town near Lake Vostra founded?"
+    one = [h["source"] for h in rag.retrieve(q, k=3)]
+    assert "Lake Vostra" in one and "Kelmar Harbour" not in one                  # the bridge is missed
+    for mode in ("titles", "prf", "per_passage"):
+        two = [h["source"] for h in rag.retrieve(q, k=3, hops=2, hop_mode=mode)]
+        assert "Kelmar Harbour" in two and "Lake Vostra" in two, (mode, two)
+    import pytest
+    with pytest.raises(ValueError):
+        rag.retrieve(q, hops=2, hop_mode="nope")

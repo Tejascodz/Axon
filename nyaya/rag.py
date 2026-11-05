@@ -310,37 +310,109 @@ class AxonRAG:
             RAG_EVENTS.inc(event="plaid_empty_fallback_exact")          # never return nothing silently
         return self.ax.search_store(q, s.store, k=depth, allowed=allowed, gpu_budget_gb=s.gpu_budget_gb)
 
-    def retrieve(self, q: str, k: int = 5, depth: int = 100, rrf_k: int = 60, conditions=None,
-                 method: str | None = None, approximate: bool | None = None, rerank: bool = True,
-                 tenant: str | None = None) -> list[dict]:
-        """Tenant and deletion filters apply inside both searches, before fusion and re-ranking, and
-        every result is checked again before it is returned."""
-        s = self._s                                                   # one snapshot for the whole request
-        allowed = self.tenant_mask(tenant)
-        t0 = time.perf_counter()
+    def _fused(self, s, q, depth, rrf_k, approximate, allowed):
         fused = defaultdict(float)
         for ranked in (s.bm25.search(q, depth, allowed=allowed), self.first_stage(q, depth, approximate, allowed)):
             for r, i in enumerate(ranked, 1):
                 fused[i] += 1.0 / (rrf_k + r)
-        cand = [i for i in sorted(fused, key=fused.get, reverse=True)[:depth] if allowed[i]]
+        return [i for i in sorted(fused, key=fused.get, reverse=True)[:depth] if allowed[i]], fused
+
+    def _reranked(self, s, q, cand, k, conditions=None, method=None):
+        sub = self.ax.store_subset(s.store, cand, [s.chunks[i]["text"] for i in cand])
+        return [(cand[r.index], r) for r in self.ax.rerank(q, sub, top_k=k, conditions=conditions, method=method)]
+
+    def _titles(self, s):
+        """Chunk positions by their document's title, as lower-case word tuples (built once per snapshot)."""
+        if getattr(s, "title_index", None) is None:
+            idx = defaultdict(list)
+            for n, c in enumerate(s.chunks):
+                name = c.get("title") or os.path.splitext(os.path.basename(c.get("source", "")))[0]
+                key = tuple(re.findall(r"[a-z0-9]+", name.lower()))
+                if key and len(key) <= 8:
+                    idx[key].append(n)
+            s.title_index = dict(idx)
+        return s.title_index
+
+    def _linked(self, s, texts, allowed, exclude):
+        """Chunks of every document whose title is mentioned in these texts (a link, as in Wikipedia)."""
+        idx, out = self._titles(s), []
+        for t in texts:
+            words = re.findall(r"[a-z0-9]+", t.lower())
+            for a in range(len(words)):
+                for b in range(a + 1, min(a + 8, len(words)) + 1):
+                    for n in idx.get(tuple(words[a:b]), ()):
+                        if allowed[n] and n not in exclude and n not in out:
+                            out.append(n)
+        return out
+
+    def retrieve(self, q: str, k: int = 5, depth: int = 100, rrf_k: int = 60, conditions=None,
+                 method: str | None = None, approximate: bool | None = None, rerank: bool = True,
+                 tenant: str | None = None, hops: int = 1, hop_mode: str = "titles", hop_from: int = 2,
+                 hop_slots: int = 2) -> list[dict]:
+        """Tenant and deletion filters apply inside both searches, before fusion and re-ranking, and
+        every result is checked again before it is returned.
+
+        hops=2 adds a second retrieval step for questions whose answer needs a passage the question
+        does not describe (a "bridge": the question names A, and A's passage names the B that holds the
+        answer). From the top `hop_from` passages of the first step it follows:
+          hop_mode="titles"        documents whose title appears in those passages (no extra search)
+          hop_mode="prf"           a second search with the question plus the top passage
+          hop_mode="per_passage"   one second search per passage, question plus that passage
+        The first step keeps its top k - hop_slots places; the best `hop_slots` passages the second
+        step adds (not already there) fill the rest. Reserved places, not rank fusion: fusion favours
+        passages both steps return, which are rarely the missing one. Off by default (round 8)."""
+        s = self._s                                                   # one snapshot for the whole request
+        allowed = self.tenant_mask(tenant)
+        t0 = time.perf_counter()
+        cand, fused = self._fused(s, q, depth, rrf_k, approximate, allowed)
         t1 = time.perf_counter()
         if not cand:
             return []
         if not rerank:                                                  # ablation: fused first stage only
             return [{**s.chunks[i], "score": fused[i], "weakest": None, "conditions": []} for i in cand[:k]]
-        sub = self.ax.store_subset(s.store, cand, [s.chunks[i]["text"] for i in cand])
-        results = self.ax.rerank(q, sub, top_k=k, conditions=conditions, method=method)
+        first = self._reranked(s, q, cand, max(k, 20) if hops > 1 else k, conditions, method)
         t2 = time.perf_counter()
         RAG_STAGE.observe(t1 - t0, stage="first_stage")
         RAG_STAGE.observe(t2 - t1, stage="rerank")
+        order = [(n, r) for n, r in first]
+        if hops > 1 and first:
+            if hop_mode not in ("titles", "prf", "per_passage"):
+                raise ValueError("hop_mode must be titles, prf or per_passage")
+            seeds = [n for n, _ in first[:hop_from]]
+            lists = [[n for n, _ in first]]
+            if hop_mode == "titles":
+                linked = self._linked(s, [s.chunks[n]["text"] for n in seeds], allowed, set(seeds))
+                if linked:
+                    q2 = q + " " + " ".join(s.chunks[n]["text"][:400] for n in seeds)
+                    lists.append([n for n, _ in self._reranked(s, q2, linked[:depth], 20)])
+            else:
+                for n in seeds[:1] if hop_mode == "prf" else seeds:
+                    q2 = q + " " + s.chunks[n]["text"][:400]
+                    cand2, _ = self._fused(s, q2, depth, rrf_k, approximate, allowed)
+                    if cand2:
+                        lists.append([m for m, _ in self._reranked(s, q2, cand2, 20)])
+            keep = [n for n, _ in first[:max(0, k - hop_slots)]]
+            new, pos = [], [0] * len(lists[1:])                        # round-robin: each seed's best new passage in turn
+            while len(new) < k - len(keep) and any(p < len(lst) for p, lst in zip(pos, lists[1:])):
+                for j, lst in enumerate(lists[1:]):
+                    while pos[j] < len(lst) and (lst[pos[j]] in keep or lst[pos[j]] in new):
+                        pos[j] += 1
+                    if pos[j] < len(lst) and len(new) < k - len(keep):
+                        new.append(lst[pos[j]])
+                        pos[j] += 1
+            rest = [n for n, _ in first if n not in keep and n not in new]
+            res = dict(first)
+            order = [(n, res.get(n)) for n in (keep + new + rest)[:k]]
+            RAG_STAGE.observe(time.perf_counter() - t2, stage="second_hop")
         hits = []
-        for r in results:
-            if not allowed[cand[r.index]]:                               # defence in depth
+        for n, r in order[:k]:
+            if not allowed[n]:                                           # defence in depth
                 RAG_EVENTS.inc(event="tenant_filter_violation_blocked")
                 continue
-            c = s.chunks[cand[r.index]]
-            hits.append({**c, "score": r.score, "weakest": r.weakest,
-                         "conditions": [(m.condition, m.relative, [e[2] for e in m.evidence]) for m in r.conditions]})
+            c = s.chunks[n]
+            hits.append({**c, "score": r.score if r is not None else 0.0, "weakest": r.weakest if r is not None else None,
+                         "conditions": [(m.condition, m.relative, [e[2] for e in m.evidence]) for m in r.conditions]
+                         if r is not None else [], **({"hop": 2} if r is None else {})})
         return hits
 
     def answer(self, q: str, k: int = 5, scan: bool = True, certificate: bool = True, max_tokens: int = 256,
