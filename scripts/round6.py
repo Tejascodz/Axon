@@ -393,7 +393,8 @@ def summary():
             x = (d.get(key) or {}).get("latency")
             return "-" if not x else (f"{x['p50_ms']} / {x['p95_ms']} ms" if both else f"{x['p50_ms']} ms")
         for _, s in rows:
-            ex, pl = s.get("exact", {}), s.get("plaid", {})
+            ex = s.get("exact", {})
+            pl = s["plaid"] if isinstance(s.get("plaid"), dict) else {}       # a bool when PLAID was not built
             L.append(f"| {s['passages']:,} | {s['build_seconds'] / 60:.1f} min | {s['load_seconds']} s | {s['vector_gb']} GB "
                      f"| {ex.get('recall@100', '-')} | {'did not fit' if ex.get('note') else lat(s, 'exact')} "
                      f"| {lat(s, 'exact_streamed', False)} | {pl.get('recall@100', '-')} | {lat(s, 'plaid')} "
