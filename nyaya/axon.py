@@ -80,6 +80,11 @@ class Axon:
     def _ctx(self):
         return torch.autocast("cuda", dtype=torch.float16, enabled=self.fp16)
 
+    def _tok_lock(self):
+        """The backbone's tokenizer lock (fast tokenizers must not run in two threads at once)."""
+        import contextlib
+        return getattr(self.backbone, "tok_lock", None) or contextlib.nullcontext()
+
     def _doc_offsets(self, texts):
         """Character span of every document token, aligned with the model's own tokenization."""
         m = self.backbone.model
@@ -89,7 +94,8 @@ class Axon:
         out = []
         for t in texts:
             lead = len(t) - len(t.lstrip())
-            enc = tok(t.strip(), truncation=True, max_length=max_len, return_offsets_mapping=True)
+            with self._tok_lock():
+                enc = tok(t.strip(), truncation=True, max_length=max_len, return_offsets_mapping=True)
             offs = [(a + lead, b + lead) if b > a else (0, 0) for a, b in enc["offset_mapping"]]
             if prefix is not None:
                 offs.insert(1, (0, 0))
@@ -101,7 +107,8 @@ class Axon:
         evidence can be shown for store-backed results without storing offsets for the whole index."""
         full = self._doc_offsets(texts)
         m = self.backbone.model
-        feats = m.tokenize(list(texts), is_query=False)
+        with self._tok_lock():
+            feats = m.tokenize(list(texts), is_query=False)
         mask = (feats["attention_mask"].bool() & m.skiplist_mask(feats["input_ids"], m.skiplist)).tolist()
         out = []
         for offs, row, am in zip(full, mask, feats["attention_mask"].tolist()):

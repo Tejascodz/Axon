@@ -1,0 +1,4 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/134 [00:00<?, ?it/s]Loading weights: 100%|██████████| 134/134 [00:00<00:00, 2884.77it/s]
+encoded 32/200
+{"added": 200, "changed": 0, "removed": 100, "unchanged": 29376, "chunks_added": 200, "chunks_deleted": 100, "live_chunks": 29576, "dead_chunks": 100, "version": 2, "seconds": 3.82}

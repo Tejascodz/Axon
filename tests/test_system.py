@@ -722,3 +722,37 @@ def test_llm_judge_checker_uses_the_same_claim_logic(monkeypatch):
         raise ConnectionError("judge down")
     monkeypatch.setattr(verify, "judge_with_llm", broken)
     assert not j.check("Answer: 1922\nEvidence: The war ended in October 1922 [c3].", src).supported   # fails closed
+
+
+def _tiny_colbert(tmp_path):
+    """A tiny real PyLate ColBERT (random weights) built offline: real tokenizer, real code paths."""
+    import pytest
+    pytest.importorskip("pylate")
+    from transformers import BertConfig, BertModel, BertTokenizerFast
+    words = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "[unused0]", "[unused1]"] + [f"w{i}" for i in range(300)] + list(".,")
+    d = tmp_path / "bert"
+    d.mkdir()
+    (d / "vocab.txt").write_text("\n".join(words))
+    BertTokenizerFast(vocab_file=str(d / "vocab.txt")).save_pretrained(str(d))
+    torch.manual_seed(0)
+    BertModel(BertConfig(vocab_size=len(words), hidden_size=32, num_hidden_layers=1, num_attention_heads=2,
+                         intermediate_size=64)).save_pretrained(str(d))
+    from pylate import models
+    models.ColBERT(model_name_or_path=str(d), embedding_size=16, device="cpu").save(str(tmp_path / "colbert"))
+    return str(tmp_path / "colbert")
+
+
+def test_axon_is_safe_to_call_from_many_threads(tmp_path):
+    """Round 7b: 0.2% of requests under load failed with the tokenizer's "Already borrowed" error."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from nyaya.axon import Axon
+    ax = Axon(_tiny_colbert(tmp_path), device="cpu")
+    texts = [" ".join(f"w{(i * 7 + j) % 300}" for j in range(5 + i % 40)) + "." for i in range(64)]
+
+    def work(i):
+        ax.query_vectors(texts[i % 64])
+        ax._valid_offsets(texts[i % 64: i % 64 + 3])
+        return True
+    with ThreadPoolExecutor(16) as ex:
+        assert all(ex.map(work, range(400)))

@@ -78,6 +78,8 @@ class HFBackbone(nn.Module):
     def __init__(self, name, gradient_checkpointing=False, revision=None):
         super().__init__()
         from transformers import AutoModel, AutoTokenizer
+        import threading
+        self.tok_lock = threading.Lock()                  # fast tokenizers are not thread-safe
         self.model = AutoModel.from_pretrained(name, revision=revision)
         self.tokenizer = AutoTokenizer.from_pretrained(name, revision=revision)
         self.hidden = self.model.config.hidden_size
@@ -85,7 +87,8 @@ class HFBackbone(nn.Module):
             self.model.gradient_checkpointing_enable()
 
     def tokenize(self, texts, max_len=256):
-        enc = self.tokenizer(texts, padding=True, truncation=True, max_length=max_len, return_tensors="pt")
+        with self.tok_lock:
+            enc = self.tokenizer(texts, padding=True, truncation=True, max_length=max_len, return_tensors="pt")
         enc["attention_mask"] = enc["attention_mask"].bool()
         return enc
 
@@ -103,7 +106,13 @@ class PyLateBackbone(nn.Module):
 
     def __init__(self, name, gradient_checkpointing=False, query_length=None, revision=None):
         super().__init__()
+        import threading
+
         from pylate import models
+        # Hugging Face fast tokenizers are not safe to call from two threads at once ("Already
+        # borrowed"): a server answers requests on a thread pool, so every tokenizer call takes this
+        # lock. Only tokenization is serialised (well under a millisecond); the model runs concurrently.
+        self.tok_lock = threading.Lock()
         # revision: a commit hash pins the exact weights (a name alone follows whatever is pushed next)
         self.model = models.ColBERT(model_name_or_path=name, revision=revision)
         if query_length:                                  # longer queries, no [MASK] expansion: nothing truncated
@@ -121,7 +130,8 @@ class PyLateBackbone(nn.Module):
         self.model.attend_to_expansion_tokens = False
 
     def encode_tokens(self, texts, is_query, device):
-        feats = self.model.tokenize(texts, is_query=is_query)
+        with self.tok_lock:
+            feats = self.model.tokenize(texts, is_query=is_query)
         feats = {k: v.to(device) for k, v in feats.items()}
         h = self.model(feats)["token_embeddings"]
         if is_query and self.model.do_query_expansion:

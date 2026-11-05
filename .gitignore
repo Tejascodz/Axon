@@ -42,3 +42,4 @@ dist/
 *.egg-info/
 !results/r6_run1/
 !results/r7_run1/
+!results/r7b_run1/
