@@ -52,7 +52,7 @@ class ChatRequest(BaseModel):
 def load(name: str, device: str | None = None, revision: str | None = None):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.float16 if device == "cuda" else torch.float32
+    dtype = torch.float16 if torch.device(device).type == "cuda" else torch.float32
     revision = revision or os.environ.get("HF_MODEL_REVISION") or None      # a commit hash pins the weights
     tok = AutoTokenizer.from_pretrained(name, revision=revision)
     from .lora import dtype_kw

@@ -28,8 +28,12 @@ Protection
   * AXON_RATE_PER_MIN: requests per minute per client address (default 120; 0 disables; /metrics exempt).
   * AXON_MAX_INFLIGHT: /ask requests served at once (default 16); more get 503 at once instead of
     queueing without bound (back-pressure).
-  * AXON_VERIFY=1: check every answer's claims against the passages they cite (nyaya.verify, an NLI
-    model; AXON_VERIFY_MODEL, AXON_VERIFY_THRESHOLD) and withhold unsupported answers.
+  * AXON_VERIFY=1: check every answer's claims against the passages they cite and withhold unsupported
+    answers. AXON_VERIFY_METHOD=nli (default; AXON_VERIFY_MODEL, AXON_VERIFY_THRESHOLD,
+    AXON_VERIFY_DEVICE) or llm (the generator judges each claim). Off by default: in round 7 the NLI
+    check withheld more right answers than wrong ones.
+  * AXON_DEVICE / AXON_VERIFY_DEVICE (e.g. cuda:0, cuda:1, cpu): where the retrieval model and the
+    checker run. Keep them off the LLM server's GPU: sharing one 15 GB GPU caused out-of-memory errors.
   * Request sizes are capped (AXON_MAX_DOCS, AXON_MAX_CHARS) so one request cannot exhaust memory.
   * Metrics are labelled by route, never by the raw URL, so unknown paths cannot grow memory.
   * Binds to localhost by default; put it behind TLS before exposing it.
@@ -141,7 +145,8 @@ _RID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 def model() -> Axon:
     with _load_lock:                                # loaded once, shared by every method and by /ask
         if "axon" not in _state:
-            _state["axon"] = Axon(os.environ.get("AXON_MODEL", "lightonai/LateOn"))
+            _state["axon"] = Axon(os.environ.get("AXON_MODEL", "lightonai/LateOn"),
+                                  device=os.environ.get("AXON_DEVICE") or None)
         return _state["axon"]
 
 
@@ -164,10 +169,14 @@ def verifier():
         return None
     with _load_lock:
         if "verifier" not in _state:
-            from .verify import DEFAULT_MODEL, Verifier
-            _state["verifier"] = Verifier(os.environ.get("AXON_VERIFY_MODEL", DEFAULT_MODEL),
-                                          threshold=float(os.environ.get("AXON_VERIFY_THRESHOLD", "0.5")),
-                                          revision=os.environ.get("AXON_VERIFY_REVISION") or None)
+            from .verify import DEFAULT_MODEL, LLMJudge, Verifier
+            if os.environ.get("AXON_VERIFY_METHOD", "nli") == "llm":
+                _state["verifier"] = LLMJudge()
+            else:
+                _state["verifier"] = Verifier(os.environ.get("AXON_VERIFY_MODEL", DEFAULT_MODEL),
+                                              device=os.environ.get("AXON_VERIFY_DEVICE") or None,
+                                              threshold=float(os.environ.get("AXON_VERIFY_THRESHOLD", "0.5")),
+                                              revision=os.environ.get("AXON_VERIFY_REVISION") or None)
         return _state["verifier"]
 
 

@@ -107,7 +107,7 @@ class Verifier:
                 last = e
         else:
             raise RuntimeError(f"no NLI model could be loaded: {last!r}")
-        if self.device == "cuda":
+        if torch.device(self.device).type == "cuda":
             self.model.half()
         labels = {v.lower(): int(k) for k, v in self.model.config.id2label.items()}
         self.entail = next(i for lab, i in labels.items() if lab.startswith("entail"))
@@ -169,6 +169,26 @@ def calibrate(scores: list[float], labels: list[bool], target_precision: float |
         if f1 > best:
             best, best_t = f1, s
     return best_t
+
+
+class LLMJudge(Verifier):
+    """The same claim check, with an LLM deciding support (YES/NO) instead of an NLI model. In round 7
+    it was more accurate on labelled pairs (F1 0.967 vs 0.883) but slower (82 vs 17 ms a claim) and
+    uses the generator's GPU. `threshold` is fixed at 0.5: the judge answers yes or no."""
+
+    def __init__(self, workers: int = 8, **llm_kw):
+        self.name, self.threshold, self.workers, self.llm_kw = "llm-judge", 0.5, workers, llm_kw
+
+    def entailment(self, pairs):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(p):
+            try:
+                return 1.0 if judge_with_llm(p[0], p[1], **self.llm_kw) else 0.0
+            except Exception:                      # a judge that cannot answer does not vouch for the claim
+                return 0.0
+        with ThreadPoolExecutor(self.workers) as ex:
+            return list(ex.map(one, pairs))
 
 
 JUDGE_PROMPT = ("Passage:\n{premise}\n\nClaim: {claim}\n\nDoes the passage support every part of the claim? "

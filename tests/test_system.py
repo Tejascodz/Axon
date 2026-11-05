@@ -708,3 +708,17 @@ def test_claims_split_and_verdict_with_stub_nli():
     assert [c.cited for c in run] == [["c1", "c3"], ["c1", "c3"], []]          # an end citation covers its run
     assert v.check("Answer: 1922 [c3]", src).supported                          # no evidence sentence: answer in source
     assert not v.check("Answer: 1950 [c3]", src).supported
+
+
+def test_llm_judge_checker_uses_the_same_claim_logic(monkeypatch):
+    from nyaya import verify
+    monkeypatch.setattr(verify, "judge_with_llm", lambda premise, claim, **kw: "1922" in claim and "1922" in premise)
+    j = verify.LLMJudge()
+    src = [{"id": "c3", "text": "The war ended in October 1922."}]
+    assert j.check("Answer: 1922\nEvidence: The war ended in October 1922 [c3].", src).supported
+    assert not j.check("Answer: 1923\nEvidence: The war ended in October 1923 [c3].", src).supported
+
+    def broken(*a, **k):
+        raise ConnectionError("judge down")
+    monkeypatch.setattr(verify, "judge_with_llm", broken)
+    assert not j.check("Answer: 1922\nEvidence: The war ended in October 1922 [c3].", src).supported   # fails closed

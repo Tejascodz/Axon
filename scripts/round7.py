@@ -60,7 +60,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 sys.path.insert(1, os.path.join(ROOT, "tests"))           # smoke mode's stand-in encoder
-OUT = os.path.join(ROOT, "results", "r7.json")
+OUT = os.path.join(ROOT, "results", os.environ.get("R7_OUT", "r7.json"))
 PROMPTS = os.path.join(ROOT, "results", "r5_prompts.json")
 LLM, SERVED = "Qwen/Qwen3-4B-Instruct-2507", "axon-llm"
 PY = sys.executable
@@ -202,7 +202,7 @@ def step_verify(a):
     save("verify_real", real_answers(v, a.smoke))
 
 
-def real_answers(v, smoke):
+def real_answers(v, smoke, sheet_path="r7_label_sheet.csv"):
     """Q2: round 5's generated answers, checked claim by claim."""
     prompts = json.load(open(PROMPTS))
     out, sheet = {}, []
@@ -256,13 +256,26 @@ def real_answers(v, smoke):
         pool = [s for s in sheet if s["verdict"] == verdict]
         picked += rng.sample(pool, min(100, len(pool)))
     rng.shuffle(picked)
-    if picked:
-        with open(os.path.join(ROOT, "results", "r7_label_sheet.csv"), "w", newline="") as f:
+    if picked and sheet_path:
+        with open(os.path.join(ROOT, "results", sheet_path), "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(picked[0]))
             w.writeheader()
             w.writerows(picked)
     log(f"real answers: {json.dumps(out)}")
     return out
+
+
+def step_judge_real(a):
+    """Q2 again with the LLM as the checker (it beat the NLI model on the labelled pairs)."""
+    from nyaya import verify
+    v = verify.LLMJudge(workers=16, base=a.llm_base, model=SERVED)
+    sheet = os.path.join(ROOT, "results", "r7_run1", "r7_label_sheet.csv")
+    if os.path.exists(sheet):                          # the 200 claims being labelled by hand: judge them too
+        rows = list(csv.DictReader(open(sheet)))
+        votes = v.entailment([(r["cited_text"].replace(" || ", " "), r["claim"]) for r in rows])
+        save("judge_on_label_sheet", [{"id": r["id"], "model": r["model"], "claim": r["claim"],
+                                        "judge": "supported" if x >= 0.5 else "not supported"} for r, x in zip(rows, votes)])
+    save("judge_real", real_answers(v, a.smoke, sheet_path=None))
 
 
 def step_judge(a):
@@ -302,6 +315,8 @@ def step_serving(a):
     prompts = json.load(open(PROMPTS))["answer"]
     rng = random.Random(11)
     levels = [(2, 12)] if a.smoke else [(4, 120), (16, 240)]
+    if a.levels:
+        levels = [tuple(int(x) for x in lv.split(":")) for lv in a.levels.split(",")]
     out = {}
     for conc, n in levels:
         work = []
@@ -339,7 +354,7 @@ def step_serving(a):
         row["itl_ms_p50"], row["itl_ms_p99"] = ms(pct(itl, 50)), ms(pct(itl, 99))
         out[f"concurrency_{conc}"] = row
         log(f"serving c{conc}: {json.dumps(row)}")
-    save("serving_mixed", out)
+    save(a.serving_key, out)
 
 
 # --------------------------------------------------------------------------- soak
@@ -358,19 +373,20 @@ def soak_questions(a):
     if a.smoke:
         rng = random.Random(0)
         words = [f"w{i}" for i in range(500)]
-        paras = [(f"T{i}", " ".join(rng.choice(words) for _ in range(25))) for i in range(400)]
-        qs = [(" ".join(p[1].split()[:5]), tenant_of(p[0])) for p in paras[:100]]
+        paras = [(f"T{i}", " ".join(rng.choice(words) for _ in range(25)), tenant_of(f"T{i}")) for i in range(400)]
+        qs = [(" ".join(p[1].split()[:5]), p[2]) for p in paras[:100]]
         return qs, paras[:350], paras[350:]
     items = rag_eval.load_hotpot("validation", n=None, seed=0, cache=os.path.join(a.data, "hotpot"))
     pool, extra = items[700:3700], items[3700:3720]
     seen, paras = set(), []
-    for it in pool:
+    for it in pool:                                    # a question's paragraphs all go to its own tenant
+        ten = tenant_of(it["id"])
         for t, x in it["paragraphs"]:
-            if t not in seen:
-                seen.add(t)
-                paras.append((t, x))
-    add = [(t, x) for it in extra for t, x in it["paragraphs"] if t not in seen][:200]
-    return [(it["question"], tenant_of(it["gold"][0])) for it in pool], paras, add
+            if (ten, t) not in seen:
+                seen.add((ten, t))
+                paras.append((t, x, ten))
+    add = [(t, x, tenant_of(it["id"])) for it in extra for t, x in it["paragraphs"]][:200]
+    return [(it["question"], tenant_of(it["id"])) for it in pool], paras, add
 
 
 def step_soak_index(a):
@@ -379,8 +395,8 @@ def step_soak_index(a):
     _, paras, add = soak_questions(a)
     for root, items in ((src, paras), (extra, add)):
         shutil.rmtree(root, ignore_errors=True)
-        for i, (t, x) in enumerate(items):
-            d = os.path.join(root, tenant_of(t))
+        for i, (t, x, ten) in enumerate(items):
+            d = os.path.join(root, ten)
             os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, f"p{i:06d}.txt"), "w") as f:
                 f.write(rag_eval.passage(t, x))
@@ -404,7 +420,8 @@ class AxonServer:
         env = {**os.environ, "AXON_INDEX": idx, "AXON_TENANT_KEYS": ",".join(f"{t}:{k}" for t, k in self.keys.items()),
                "AXON_METRICS_KEY": self.mkey, "AXON_RATE_PER_MIN": "0", "AXON_MAX_INFLIGHT": "16",
                "AXON_MODEL": "lightonai/LateOn", "AXON_MODEL_REVISION": "62911e105059585d244384c7d17826e35f669c17",
-               "NYAYA_LLM_BASE_URL": a.llm_base, "NYAYA_LLM_MODEL": SERVED, "CUDA_VISIBLE_DEVICES": "0",
+               "NYAYA_LLM_BASE_URL": a.llm_base, "NYAYA_LLM_MODEL": SERVED, "CUDA_VISIBLE_DEVICES": a.axon_gpu,
+               "MALLOC_ARENA_MAX": "2",
                **env_extra}
         target = ["scripts/r7_fake_server.py"] if a.smoke else ["-m", "uvicorn", "nyaya.server:app"]
         self.f = open(os.path.join(ROOT, "logs", f"{logname}.log"), "a")
@@ -549,7 +566,7 @@ def step_soak(a):
             else:
                 with open(os.path.join(ROOT, "logs", "r7_soak_update.log"), "a") as lf:
                     rc = subprocess.run([PY, "-m", "nyaya.rag", "update", "--src", src, "--index", idx], cwd=ROOT,
-                                        env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"}, stdout=lf,
+                                        env={**os.environ, "CUDA_VISIBLE_DEVICES": a.axon_gpu}, stdout=lf,
                                         stderr=subprocess.STDOUT).returncode
                 rep = None
             t_upd = time.time()
@@ -580,6 +597,7 @@ def step_soak(a):
             n = len(rss)
             mt, mr = sum(t for t, _ in rss) / n, sum(r for _, r in rss) / n
             slope = sum((t - mt) * (r - mr) for t, r in rss) / max(sum((t - mt) ** 2 for t, _ in rss), 1e-9)
+            res["memory_series_mb"] = [(round(t - rss[0][0]), round(r / 2 ** 20)) for t, r in rss]
             res["memory"] = {"rss_start_mb": round(rss[0][1] / 2 ** 20), "rss_end_mb": round(rss[-1][1] / 2 ** 20),
                              "rss_max_mb": round(max(r for _, r in rss) / 2 ** 20),
                              "slope_mb_per_hour": round(slope * 3600 / 2 ** 20, 1)}
@@ -603,26 +621,30 @@ def step_soak(a):
 
 
 def step_soak_verify(a):
+    """The load test's workload for a few minutes per checker: its latency cost and how much it withholds."""
     qs, _, _ = soak_questions(a)
-    thr = (load().get("verifier_bench") or {}).get("threshold_f1", 0.5)
-    srv = AxonServer(a, {"AXON_VERIFY": "1", "AXON_VERIFY_THRESHOLD": str(thr)}, "r7_axon_verify")
-    try:
-        if not srv.wait_ready():
-            save("soak_verify", {"error": "server with verification did not become ready (logs/r7_axon_verify.log)"})
-            return
-        recs = []
-        t0 = time.time()
-        drive(srv, qs, 8, 60 if a.smoke else 300, recs)
-        m = srv.metrics()
-        s = m.get(('rag_stage_seconds_sum', '{stage="verify"}'))
-        c = m.get(('rag_stage_seconds_count', '{stage="verify"}'))
-        res = {**summarize(recs, t0, minutes=False), "threshold": thr,
-               "verify_ms_mean": ms(s / c) if s and c else None,
-               "withheld_unsupported": m.get(('rag_events_total', '{event="unsupported_answer_withheld"}'), 0.0)}
-        save("soak_verify", res)
-        log(f"soak with verification: {json.dumps(res)}")
-    finally:
-        srv.stop()
+    thr = (load().get("verifier_bench") or {}).get("threshold_f1") or a.nli_threshold
+    out = {}
+    for method, extra in (("nli", {"AXON_VERIFY_METHOD": "nli", "AXON_VERIFY_THRESHOLD": str(thr)}),
+                          ("llm", {"AXON_VERIFY_METHOD": "llm"})):
+        srv = AxonServer(a, {"AXON_VERIFY": "1", **extra}, f"r7_axon_verify_{method}")
+        try:
+            if not srv.wait_ready():
+                out[method] = {"error": f"server did not become ready (logs/r7_axon_verify_{method}.log)"}
+                continue
+            recs = []
+            t0 = time.time()
+            drive(srv, qs, 8, 60 if a.smoke else 300, recs)
+            m = srv.metrics()
+            s_, c_ = m.get(('rag_stage_seconds_sum', '{stage="verify"}')), m.get(('rag_stage_seconds_count', '{stage="verify"}'))
+            out[method] = {**summarize(recs, t0, minutes=False), "threshold": thr if method == "nli" else None,
+                           "verify_ms_mean": ms(s_ / c_) if s_ and c_ else None,
+                           "withheld_unsupported": m.get(('rag_events_total', '{event="unsupported_answer_withheld"}'), 0.0),
+                           "answered": m.get(('rag_events_total', '{event="answered"}'), 0.0)}
+            log(f"soak with {method} check: {json.dumps(out[method])}")
+        finally:
+            srv.stop()
+    save("soak_verify", out)
 
 
 # --------------------------------------------------------------------------- PLAID compaction (GPU 1)
@@ -675,7 +697,8 @@ def step(name, args, gpu, timeout, a):
     with open(os.path.join(ROOT, "logs", f"r7_{name}.log"), "a") as f:
         try:
             rc = subprocess.run([PY, os.path.abspath(__file__), *args, *(["--smoke"] if a.smoke else []),
-                                 "--work", a.work, "--data", a.data, "--llm_base", a.llm_base],
+                                 "--work", a.work, "--data", a.data, "--llm_base", a.llm_base, "--axon_gpu", a.axon_gpu,
+                                 "--nli_threshold", str(a.nli_threshold)],
                                 cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT, timeout=timeout).returncode
         except subprocess.TimeoutExpired:
             rc = -9
@@ -704,7 +727,7 @@ def lane_gpu1(a, soak_done):
     log(f"scale (round 6): exit {rc}")
 
 
-def start_llm(a):
+def start_llm(a, extra_flags=()):
     """SGLang (round 5's tested set-up), with room left on the GPU for the Axon server."""
     if a.smoke:
         f = open(os.path.join(ROOT, "logs", "r7_fake_llm.log"), "a")
@@ -724,10 +747,11 @@ def start_llm(a):
     for flags in r5.SGLANG_ATTEMPTS:
         cmd = [py, "-m", "sglang.launch_server", "--model-path", LLM, "--served-model-name", SERVED, "--host", "127.0.0.1",
                "--port", "30000", "--dtype", "half", "--context-length", "4096", "--mem-fraction-static", "0.70",
-               "--max-running-requests", "32", "--enable-metrics", *flags]
+               "--max-running-requests", "32", "--enable-metrics", *extra_flags, *flags]
         s = r5.Server(cmd, {**r5.gpu_env(0), **r5.cuda_link_env()}, "r7_sglang", "http://127.0.0.1:30000/v1")
         if s.ready(SERVED, timeout=r5.READY_TIMEOUT):
-            save("sglang", {"flags": flags, "mem_fraction_static": 0.70})
+            save("sglang" + ("_" + "_".join(extra_flags).strip("-").replace("-", "_") if extra_flags else ""),
+                 {"flags": [*extra_flags, *flags], "mem_fraction_static": 0.70})
             return s
         s.stop()
     return None
@@ -758,6 +782,32 @@ def lane_gpu0(a, soak_done):
         soak_done.set()
 
 
+def rerun(a):
+    """Round 7b. GPU 0: SGLang only. GPU 1: the Axon server, its index updates and the NLI checker."""
+    a.axon_gpu = "1"
+    step("soak_index", ["--step", "soak_index"], 1, 3600, a)
+    for flags, key in ((("--chunked-prefill-size", "512"), "serving_mixed_chunked512"), ((), None)):
+        llm = start_llm(a, flags)
+        if llm is None:
+            save("sglang" + ("_chunked" if flags else ""), {"error": "SGLang did not start (logs/r7_sglang.log)"})
+            continue
+        try:
+            if key:                                    # same workload as round 7, smaller prefill chunks
+                step(key, ["--step", "serving", "--serving_key", key, "--levels", "6:12" if a.smoke else "16:240"],
+                     None, 3 * 3600, a)
+                continue
+            step("judge_real", ["--step", "judge_real"], None, 3 * 3600, a)
+            if done("soak_index"):
+                step("soak", ["--step", "soak"], None, 3 * 3600, a)
+                step("soak_verify", ["--step", "soak_verify"], None, 3600, a)
+        finally:
+            (llm.stop() if hasattr(llm, "stop") else llm.terminate())
+    md = summary()
+    with open(os.path.join(ROOT, "results", "ROUND7B.md"), "w") as f:
+        f.write(md)
+    print("\n" + md, flush=True)
+
+
 # --------------------------------------------------------------------------- summary
 
 def summary():
@@ -767,12 +817,12 @@ def summary():
     for k in ("deps", "scale_300000"):
         if k in r6:
             L += [f"## Round 6: {k}", "", "```", json.dumps(r6[k], indent=1)[:3000], "```", ""]
-    for k in ("compaction", "serving_mixed", "soak", "burst", "soak_verify", "verifier_bench", "judge", "verify_real",
-              "soak_index", "sglang"):
+    for k in ("compaction", "serving_mixed", "serving_mixed_chunked512", "soak", "burst", "soak_verify",
+              "verifier_bench", "judge", "verify_real", "judge_real", "soak_index", "sglang"):
         if k in r:
             v = r[k]
             if k == "soak" and isinstance(v, dict):
-                v = {kk: vv for kk, vv in v.items() if kk != "per_minute"}
+                v = {kk: vv for kk, vv in v.items() if kk not in ("per_minute", "memory_series_mb")}
             L += [f"## {k}", "", "```", json.dumps(v, indent=1)[:6000], "```", ""]
     return "\n".join(L) + "\n"
 
@@ -785,6 +835,11 @@ def main():
     ap.add_argument("--data", default=os.path.join(ROOT, "data"))
     ap.add_argument("--llm_base", default="http://127.0.0.1:30000/v1")
     ap.add_argument("--summary_only", action="store_true")
+    ap.add_argument("--rerun", action="store_true", help="round 7b: only the parts that failed or are new in round 7")
+    ap.add_argument("--axon_gpu", default="0", help="GPU of the Axon server, its updates and checker")
+    ap.add_argument("--nli_threshold", type=float, default=0.0536, help="if this run did not calibrate one")
+    ap.add_argument("--serving_key", default="serving_mixed")
+    ap.add_argument("--levels", default=None, help="serving: concurrency:requests,...")
     a = ap.parse_args()
     a.work = a.work or ("/tmp/r7_smoke" if a.smoke else "/tmp/r7")  # single-user Kaggle VM scratch  # nosec B108
     for d in (a.work, os.path.join(ROOT, "logs"), os.path.join(ROOT, "results")):
@@ -792,7 +847,8 @@ def main():
     if a.step:
         if a.smoke and a.step in ("soak", "soak_verify", "serving", "judge"):
             a.llm_base = "http://127.0.0.1:8000/v1"
-        {"verify": step_verify, "judge": step_judge, "serving": step_serving, "soak_index": step_soak_index,
+        {"verify": step_verify, "judge": step_judge, "judge_real": step_judge_real, "serving": step_serving,
+         "soak_index": step_soak_index,
          "soak": step_soak, "soak_verify": step_soak_verify, "compaction": step_compaction}[a.step](a)
         return
     if a.summary_only:
@@ -801,6 +857,8 @@ def main():
     if not os.path.exists(PROMPTS):
         raise SystemExit(f"{PROMPTS} is missing: it holds round 5's prompts (copy it into results/)")
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    if a.rerun:
+        return rerun(a)
     soak_done = threading.Event()
     t1 = threading.Thread(target=lane_gpu1, args=(a, soak_done))
     t1.start()

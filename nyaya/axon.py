@@ -67,7 +67,7 @@ class Axon:
         self.revision = revision or os.environ.get("AXON_MODEL_REVISION") or None
         self.device = device or ("cuda" if torch.cuda.is_available() else
                                  "mps" if torch.backends.mps.is_available() else "cpu")
-        self.fp16 = fp16 and self.device == "cuda"
+        self.fp16 = fp16 and torch.device(self.device).type == "cuda"
         self.backbone = PyLateBackbone(model, query_length=query_length, revision=self.revision)
         dim = self.backbone.hidden
         # one model in memory; each scoring method is a thin wrapper around it
