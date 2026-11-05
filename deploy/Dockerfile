@@ -3,9 +3,9 @@
 #   docker build -f deploy/Dockerfile -t axon:1.0 .
 #   docker build -f deploy/Dockerfile --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu126 -t axon:1.0-gpu .
 #
-# Dependencies: PyLate 1.6.0 pins sentence-transformers, transformers and ujson to releases with
-# published advisories; deploy/overrides.txt lifts them to the fixed releases (see that file).
-# --build-arg PYLATE_PINS=1 installs PyLate's own pins instead.
+# Dependencies: deploy/overrides.txt lifts ujson to its fixed release; the other advisories in
+# PyLate's pins cannot be lifted without breaking the model (tested; see that file and RUNBOOK.md).
+# --build-arg PYLATE_PINS=1 installs PyLate's own pins exactly.
 # For production, pin the base image by digest (python:3.12-slim@sha256:...) so rebuilds are identical.
 FROM python:3.12-slim
 

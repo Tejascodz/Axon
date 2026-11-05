@@ -1,0 +1,204 @@
+{
+ "environment": {
+  "python": "3.13.16",
+  "smoke": false,
+  "gpus": [
+   "Tesla T4, 580.178.04, 15360 MiB",
+   "Tesla T4, 580.178.04, 15360 MiB"
+  ],
+  "mem_total_gb": 31.3
+ },
+ "evidence": {
+  "questions": 100,
+  "candidates": 20,
+  "max_score_diff": 0.0,
+  "same_order": 1.0,
+  "same_evidence": 1.0
+ },
+ "scale_100000": {
+  "passages": 100000,
+  "build_seconds": 3555.53,
+  "vector_gb": 2.52,
+  "plaid": {
+   "recall@100": 0.9743,
+   "latency": {
+    "p50_ms": 119.2,
+    "p95_ms": 147.3,
+    "p99_ms": 162.1,
+    "n": 200
+   }
+  },
+  "plaid_error": null,
+  "gpu_peak_build_gb": 5.54,
+  "rss_peak_gb_after_build": 12.32,
+  "load_seconds": 15.4,
+  "exact": {
+   "recall@100": 0.9757,
+   "latency": {
+    "p50_ms": 119.0,
+    "p95_ms": 157.1,
+    "p99_ms": 188.2,
+    "n": 200
+   },
+   "vectors_resident_on_gpu": true
+  },
+  "exact_streamed": {
+   "latency": {
+    "p50_ms": 693.9,
+    "p95_ms": 722.5,
+    "p99_ms": 740.4,
+    "n": 200
+   },
+   "same_results_as_resident": true
+  },
+  "pipeline_exact": {
+   "latency": {
+    "p50_ms": 177.8,
+    "p95_ms": 221.4,
+    "p99_ms": 271.6,
+    "n": 200
+   }
+  },
+  "pipeline_plaid": {
+   "latency": {
+    "p50_ms": 179.2,
+    "p95_ms": 214.6,
+    "p99_ms": 235.2,
+    "n": 200
+   }
+  },
+  "rss_peak_gb": 12.32
+ },
+ "update": {
+  "files_changed": 500,
+  "files_deleted": 250,
+  "files_added": 250,
+  "update": {
+   "added": 250,
+   "changed": 500,
+   "removed": 250,
+   "unchanged": 99250,
+   "chunks_added": 750,
+   "chunks_deleted": 750,
+   "live_chunks": 100000,
+   "dead_chunks": 750,
+   "version": 2,
+   "seconds": 36.98
+  },
+  "full_build_seconds": 3555.53,
+  "update_speedup": 96.1,
+  "compact": {
+   "chunks_before": 100750,
+   "chunks_after": 100000,
+   "version": 3,
+   "seconds": 2942.65
+  },
+  "checks": {
+   "changed_found_top5": 0.94,
+   "deleted_returned": 0,
+   "added_found_top5": 0.96,
+   "recall@100_before": 0.9757,
+   "recall@100_after": 0.9757,
+   "plaid_recall@100_after": 0.9743,
+   "recall@100_after_compact": 0.9757
+  }
+ },
+ "size_note": "Large size reduced from 300,000 to 151,876: the 100,000 build took 59 min.",
+ "scale_150000": {
+  "passages": 150000,
+  "build_seconds": 3973.87,
+  "vector_gb": 3.75,
+  "plaid": {
+   "recall@100": 0.9707,
+   "latency": {
+    "p50_ms": 145.7,
+    "p95_ms": 187.2,
+    "p99_ms": 205.9,
+    "n": 200
+   }
+  },
+  "plaid_error": null,
+  "gpu_peak_build_gb": 7.23,
+  "rss_peak_gb_after_build": 17.75,
+  "load_seconds": 21.5,
+  "exact": {
+   "recall@100": 0.9714,
+   "latency": {
+    "p50_ms": 167.5,
+    "p95_ms": 224.4,
+    "p99_ms": 267.9,
+    "n": 200
+   },
+   "vectors_resident_on_gpu": true
+  },
+  "exact_streamed": {
+   "latency": {
+    "p50_ms": 1019.7,
+    "p95_ms": 1060.8,
+    "p99_ms": 1101.4,
+    "n": 200
+   },
+   "same_results_as_resident": true
+  },
+  "pipeline_exact": {
+   "latency": {
+    "p50_ms": 235.5,
+    "p95_ms": 294.1,
+    "p99_ms": 338.1,
+    "n": 200
+   }
+  },
+  "pipeline_plaid": {
+   "latency": {
+    "p50_ms": 214.6,
+    "p95_ms": 263.2,
+    "p99_ms": 283.2,
+    "n": 200
+   }
+  },
+  "rss_peak_gb": 17.75
+ },
+ "revision_fallback": "OutOfMemoryError('CUDA out of memory. Tried to allocate 2.00 MiB. GPU 0 has a total capacity of 14.56 GiB of which 2.81 MiB is free. Process 65 has 14.31 GiB memory in use. Including non-PyTorch memory, this process has 250.00 MiB memory in use. Of the allocated memory 148.00 MiB is allocated by PyT",
+ "deps": {
+  "error": "encoding failed in the overridden environment (logs/r6_deps_env.log)"
+ },
+ "scale_300000": {
+  "passages": 300000,
+  "build_seconds": 1887.48,
+  "vector_gb": 7.33,
+  "plaid": false,
+  "plaid_error": null,
+  "gpu_peak_build_gb": 1.08,
+  "rss_peak_gb_after_build": 2.96,
+  "load_seconds": 41.6,
+  "exact": {
+   "recall@100": 0.9593,
+   "latency": {
+    "p50_ms": 311.8,
+    "p95_ms": 417.8,
+    "p99_ms": 534.6,
+    "n": 200
+   },
+   "vectors_resident_on_gpu": true
+  },
+  "exact_streamed": {
+   "latency": {
+    "p50_ms": 1955.2,
+    "p95_ms": 2025.0,
+    "p99_ms": 2078.9,
+    "n": 200
+   },
+   "same_results_as_resident": true
+  },
+  "pipeline_exact": {
+   "latency": {
+    "p50_ms": 401.1,
+    "p95_ms": 507.6,
+    "p99_ms": 614.4,
+    "n": 200
+   },
+   "exact_vectors": "gpu"
+  },
+  "rss_peak_gb": 10.67
+ }
+}

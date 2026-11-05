@@ -1,0 +1,228 @@
+warning: The `--system` flag has no effect, `uv venv` always ignores virtual environments when finding a Python interpreter; did you mean `--no-managed-python`?
+Using CPython 3.13.16 interpreter at: /usr/bin/python3
+Creating virtual environment at: /tmp/r6/deps_env
+Activate with: source /tmp/r6/deps_env/bin/activate
+Using Python 3.13.16 environment at: /tmp/r6/deps_env
+Resolved 29 packages in 1.61s
+Downloading nvidia-cuda-nvrtc (86.0MiB)
+Downloading nvidia-cusolver (191.6MiB)
+Downloading torch (506.5MiB)
+Downloading triton (179.6MiB)
+Downloading setuptools (1.0MiB)
+Downloading sympy (6.0MiB)
+Downloading networkx (2.0MiB)
+Downloading cuda-bindings (6.6MiB)
+Downloading nvidia-cuda-runtime (2.1MiB)
+Downloading nvidia-cusparselt-cu13 (162.0MiB)
+Downloading nvidia-cudnn-cu13 (349.1MiB)
+Downloading nvidia-cufile (1.2MiB)
+Downloading nvidia-cusparse (139.2MiB)
+Downloading nvidia-cufft (204.2MiB)
+Downloading nvidia-nvjitlink (38.8MiB)
+Downloading nvidia-curand (56.8MiB)
+Downloading nvidia-nvshmem-cu13 (57.6MiB)
+Downloading nvidia-cuda-cupti (10.2MiB)
+Downloading nvidia-cublas (403.5MiB)
+Downloading nvidia-nccl-cu13 (187.4MiB)
+ Downloaded setuptools
+ Downloaded nvidia-cufile
+ Downloaded nvidia-cuda-runtime
+ Downloaded networkx
+ Downloaded sympy
+ Downloaded cuda-bindings
+ Downloaded nvidia-cuda-cupti
+ Downloaded triton
+ Downloaded nvidia-nvjitlink
+ Downloaded torch
+ Downloaded nvidia-curand
+ Downloaded nvidia-nvshmem-cu13
+ Downloaded nvidia-cuda-nvrtc
+ Downloaded nvidia-cusparse
+ Downloaded nvidia-cusparselt-cu13
+ Downloaded nvidia-nccl-cu13
+ Downloaded nvidia-cusolver
+ Downloaded nvidia-cufft
+ Downloaded nvidia-cudnn-cu13
+ Downloaded nvidia-cublas
+Prepared 29 packages in 1m 27s
+Installed 29 packages in 329ms
+ + cuda-bindings==13.4.4
+ + cuda-pathfinder==1.8.5
+ + cuda-toolkit==13.0.2
+ + filelock==4.2.9
+ + fsspec==2026.9.0
+ + jinja2==3.1.6
+ + markupsafe==3.0.4
+ + mpmath==1.3.0
+ + networkx==3.7
+ + nvidia-cublas==13.1.0.3
+ + nvidia-cuda-cupti==13.0.85
+ + nvidia-cuda-nvrtc==13.0.88
+ + nvidia-cuda-runtime==13.0.96
+ + nvidia-cudnn-cu13==9.19.0.56
+ + nvidia-cufft==12.0.0.61
+ + nvidia-cufile==1.15.1.6
+ + nvidia-curand==10.4.0.35
+ + nvidia-cusolver==12.0.4.66
+ + nvidia-cusparse==12.6.3.3
+ + nvidia-cusparselt-cu13==0.8.0
+ + nvidia-nccl-cu13==2.28.9
+ + nvidia-nvjitlink==13.0.88
+ + nvidia-nvshmem-cu13==3.4.5
+ + nvidia-nvtx==13.0.85
+ + setuptools==81.0.0
+ + sympy==1.14.0
+ + torch==2.11.0+cu130
+ + triton==3.6.0
+ + typing-extensions==4.16.0
+Using Python 3.13.16 environment at: /tmp/r6/deps_env
+Resolved 88 packages in 883ms
+   Building axon-retrieval @ file:///kaggle/working/nyaya
+Downloading tokenizers (3.2MiB)
+Downloading hf-xet (4.1MiB)
+Downloading pandas (11.4MiB)
+Downloading maturin (10.3MiB)
+Downloading numkong (10.1MiB)
+Downloading numpy (15.9MiB)
+Downloading pyarrow (52.5MiB)
+Downloading pygments (1.2MiB)
+Downloading scipy (33.7MiB)
+Downloading aiohttp (1.8MiB)
+Downloading transformers (12.4MiB)
+Downloading fast-plaid (2.0MiB)
+Downloading usearch (2.2MiB)
+Downloading scikit-learn (8.7MiB)
+ Downloaded pygments
+ Downloaded aiohttp
+ Downloaded fast-plaid
+ Downloaded usearch
+ Downloaded tokenizers
+ Downloaded hf-xet
+ Downloaded scikit-learn
+ Downloaded numkong
+ Downloaded maturin
+ Downloaded pandas
+ Downloaded numpy
+ Downloaded transformers
+      Built axon-retrieval @ file:///kaggle/working/nyaya
+ Downloaded scipy
+ Downloaded pyarrow
+Prepared 60 packages in 5.07s
+Uninstalled 1 package in 1ms
+Installed 60 packages in 1.83s
+ + accelerate==1.15.0
+ + aiohappyeyeballs==2.7.1
+ + aiohttp==3.14.5
+ + aiosignal==1.4.0
+ + annotated-doc==0.0.5
+ + anyio==4.16.0
+ + attrs==26.1.0
+ + axon-retrieval==1.0.0 (from file:///kaggle/working/nyaya)
+ + click==8.5.0
+ + cloudpickle==3.1.2
+ + datasets==5.1.0
+ + dill==0.4.1
+ + fast-plaid==1.4.6.2110
+ + fastkmeans==0.5.0
+ + frozenlist==1.8.0
+ - fsspec==2026.9.0
+ + fsspec==2026.7.0
+ + h11==0.16.0
+ + hf-xet==1.8.0
+ + httpcore2==2.16.0
+ + httpx2==2.16.0
+ + huggingface-hub==2.4.0
+ + idna==3.20
+ + joblib==1.6.0
+ + markdown-it-py==4.2.0
+ + maturin==1.16.0
+ + mdurl==0.1.2
+ + multidict==7.2.1
+ + multiprocess==0.70.19
+ + narwhals==2.28.0
+ + ninja==1.11.1.4
+ + numkong==7.8.7
+ + numpy==2.5.4
+ + packaging==26.3
+ + pandas==3.1.1
+ + propcache==0.5.4
+ + psutil==7.2.2
+ + pyarrow==26.0.1
+ + pygments==2.21.0
+ + pylate==1.6.0
+ + pypdf==6.21.4
+ + python-dateutil==4.0.0
+ + pyyaml==6.0.3
+ + regex==2026.9.29
+ + rich==15.0.0
+ + safetensors==0.8.0
+ + scikit-learn==1.9.1
+ + scipy==1.18.1
+ + sentence-transformers==5.7.0
+ + shellingham==1.5.4
+ + threadpoolctl==3.7.0
+ + tokenizers==0.23.3
+ + tqdm==4.70.1
+ + transformers==5.22.1
+ + truststore==0.10.5
+ + typer==0.27.3
+ + tzdata==2026.6
+ + ujson==5.13.0
+ + usearch==2.26.6
+ + xxhash==4.0.2
+ + yarl==1.25.1
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+09:04:34 66581 unique paragraphs available, 700 evaluation questions
+Loading weights:   0%|          | 0/134 [00:00<?, ?it/s]Loading weights: 100%|██████████| 134/134 [00:00<00:00, 2452.69it/s]
+Error in sitecustomize; set PYTHONVERBOSE for traceback:
+ModuleNotFoundError: No module named 'wrapt'
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+09:06:46 66581 unique paragraphs available, 700 evaluation questions
+The `tokenizer_kwargs` argument was renamed and is now deprecated. Please use `processor_kwargs` instead.
+Loading weights:   0%|          | 0/134 [00:00<?, ?it/s]Loading weights: 100%|██████████| 134/134 [00:00<00:00, 1983.96it/s]
+/tmp/r6/deps_env/lib/python3.13/site-packages/pylate/models/colbert.py:250: FutureWarning: The `get_word_embedding_dimension` method has been renamed to `get_embedding_dimension`.
+  hidden_size = self[0].get_word_embedding_dimension()
+09:07:08 revision 62911e105059585d244384c7d17826e35f669c17 failed (KeyError); using the latest snapshot
+Loading weights:   0%|          | 0/134 [00:00<?, ?it/s]Loading weights: 100%|██████████| 134/134 [00:00<00:00, 1888.67it/s]
+Traceback (most recent call last):
+  File "/kaggle/working/nyaya/scripts/round6.py", line 83, in make_axon
+    return Axon(RETRIEVER, revision=REVISION)
+  File "/kaggle/working/nyaya/nyaya/axon.py", line 71, in __init__
+    self.backbone = PyLateBackbone(model, query_length=query_length, revision=self.revision)
+                    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/nyaya/nyaya/model.py", line 108, in __init__
+    self.model = models.ColBERT(model_name_or_path=name, revision=revision)
+                 ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/r6/deps_env/lib/python3.13/site-packages/pylate/models/colbert.py", line 339, in __init__
+    self[i] = Dense.from_sentence_transformers(dense=self[i])
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/tmp/r6/deps_env/lib/python3.13/site-packages/pylate/models/Dense.py", line 94, in from_sentence_transformers
+    config["activation_function"]
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'activation_function'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/kaggle/working/nyaya/scripts/round6.py", line 513, in <module>
+    main()
+    ~~~~^^
+  File "/kaggle/working/nyaya/scripts/round6.py", line 452, in main
+    return encode_sample(a.encode_sample, a.n_docs, a.n_q, a.data, a.smoke)
+  File "/kaggle/working/nyaya/scripts/round6.py", line 309, in encode_sample
+    ax = make_axon(smoke, record=False)
+  File "/kaggle/working/nyaya/scripts/round6.py", line 88, in make_axon
+    return Axon(RETRIEVER)
+  File "/kaggle/working/nyaya/nyaya/axon.py", line 71, in __init__
+    self.backbone = PyLateBackbone(model, query_length=query_length, revision=self.revision)
+                    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/nyaya/nyaya/model.py", line 108, in __init__
+    self.model = models.ColBERT(model_name_or_path=name, revision=revision)
+                 ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/r6/deps_env/lib/python3.13/site-packages/pylate/models/colbert.py", line 339, in __init__
+    self[i] = Dense.from_sentence_transformers(dense=self[i])
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/tmp/r6/deps_env/lib/python3.13/site-packages/pylate/models/Dense.py", line 94, in from_sentence_transformers
+    config["activation_function"]
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'activation_function'

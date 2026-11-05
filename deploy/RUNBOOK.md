@@ -83,6 +83,17 @@ python -m nyaya.rag compact --index deploy/index               # when deleted ch
 * Pin images by digest (`image@sha256:...`) in `.env` once a version is approved, so a re-pushed tag cannot
   change what runs.
 
+## Dependency advisories accepted
+
+`deploy/overrides.txt` lists advisories in PyLate 1.6.0's pinned dependencies that cannot be fixed by
+upgrading: the fixed sentence-transformers and transformers releases stop LateOn from loading (tested
+on Kaggle and offline). Their common path is loading a malicious model or file. Mitigations:
+* models load only by pinned commit (`AXON_MODEL_REVISION`, `AXON_VERIFY_REVISION`), from repositories
+  you trust, with `trust_remote_code` off (the default);
+* the container's root filesystem is read-only, it runs as a non-root user with no capabilities;
+* never point `AXON_MODEL` at a model you have not reviewed.
+CI fails on any advisory not in that list. Revisit when PyLate supports newer sentence-transformers.
+
 ## Logs
 
 Axon writes one JSON line per request to stdout: `ts`, `request_id`, `method`, `route`, `status`, `ms`,

@@ -547,9 +547,10 @@ def step_soak(a):
                 rep = ix.update(src, idx, _FakeAxon())
                 rc = 0
             else:
-                rc = subprocess.run([PY, "-m", "nyaya.rag", "update", "--src", src, "--index", idx], cwd=ROOT,
-                                    env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"}, capture_output=True,
-                                    text=True).returncode
+                with open(os.path.join(ROOT, "logs", "r7_soak_update.log"), "a") as lf:
+                    rc = subprocess.run([PY, "-m", "nyaya.rag", "update", "--src", src, "--index", idx], cwd=ROOT,
+                                        env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"}, stdout=lf,
+                                        stderr=subprocess.STDOUT).returncode
                 rep = None
             t_upd = time.time()
             while time.time() - t_upd < 300 and srv.metrics().get(("axon_index_version", "")) == v0:

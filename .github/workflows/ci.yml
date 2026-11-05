@@ -40,11 +40,13 @@ jobs:
           uv pip install --system --index-url https://download.pytorch.org/whl/cpu "torch==2.11.*"
           uv pip install --system --override deploy/overrides.txt ".[server]" "pypdf>=5"
       - name: Known vulnerabilities (pip-audit)
-        # Three reviewed exceptions, explained in deploy/overrides.txt: torch.jit.script (never called;
-        # torch is held at 2.11 for fast-plaid) and two setuptools issues in sdist builds and Windows
-        # installs (setuptools held below 82 by torch 2.11). Every other advisory fails the build.
+        # Reviewed exceptions, each explained in deploy/overrides.txt (upgrading them breaks the model
+        # or PLAID; mitigations in deploy/RUNBOOK.md). Any other advisory fails the build.
         run: >-
-          pip-audit --skip-editable --ignore-vuln PYSEC-2025-194
+          pip-audit --skip-editable
+          --ignore-vuln PYSEC-2026-4164
+          --ignore-vuln PYSEC-2026-2290 --ignore-vuln PYSEC-2026-3929 --ignore-vuln PYSEC-2026-4174
+          --ignore-vuln PYSEC-2025-194
           --ignore-vuln PYSEC-2026-3447 --ignore-vuln GHSA-xmj3-9gf7-h52w
 
   monitoring:
@@ -88,8 +90,8 @@ jobs:
           test "$(docker run --rm axon:1.0 id -u)" = "10001"
           docker run --rm axon:1.0 python -m pip check > pipcheck.txt || true
           cat pipcheck.txt
-          # the only conflicts allowed are the deliberate overrides of PyLate's pins (deploy/overrides.txt)
-          if grep -v -E "^pylate 1\.6\.0 has requirement (sentence-transformers|transformers|ujson)[=<>]|^No broken requirements" pipcheck.txt | grep -q .; then exit 1; fi
+          # the only conflict allowed is the deliberate ujson override (deploy/overrides.txt)
+          if grep -v -E "^pylate 1\.6\.0 has requirement ujson[=<>]|^No broken requirements" pipcheck.txt | grep -q .; then exit 1; fi
           docker run --rm -i axon:1.0 python - < deploy/ci/plaid_check.py
       - name: Build an index with the real model inside the image
         run: |

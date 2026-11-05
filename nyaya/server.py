@@ -362,8 +362,14 @@ def ask(req: AskRequest, request: Request):
     except CircuitOpen:                          # generator down: fail fast, tell the client when to retry
         raise HTTPException(503, "generator unavailable, retry shortly", headers={"Retry-After": "10"})
     except Exception as e:                       # generator unreachable, etc.: no internals in the reply
+        oom = "out of memory" in str(e).lower() or type(e).__name__ == "OutOfMemoryError"
         log.info(json.dumps({"event": "ask_failed", "request_id": request.state.request_id,
-                             "error": type(e).__name__}))
+                             "error": type(e).__name__, "detail": str(e)[:300]}))   # operators only; never in the reply
+        if oom:                                  # the GPU is full right now: retryable, not a broken request
+            with contextlib.suppress(Exception):
+                import torch
+                torch.cuda.empty_cache()
+            raise HTTPException(503, "server out of GPU memory, retry shortly", headers={"Retry-After": "5"})
         raise HTTPException(502, f"generation failed: {type(e).__name__}")
     finally:
         with _inflight_lock:
