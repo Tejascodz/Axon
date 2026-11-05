@@ -36,13 +36,21 @@ class Handler(BaseHTTPRequestHandler):
         else:
             reply = "Answer: The sources do not contain the answer.\nEvidence: No sources were given."
         words = reply.split(" ")
+        usage = {"prompt_tokens": len(user.split()), "completion_tokens": len(words)}
+        if not req.get("stream"):                       # plain request: one JSON reply
+            body = json.dumps({"choices": [{"message": {"content": reply}, "finish_reason": "stop"}], "usage": usage}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         for i, w in enumerate(words):
             piece = w if i == 0 else " " + w
             self.wfile.write(f"data: {json.dumps({'choices': [{'delta': {'content': piece}}]})}\n\n".encode())
-        usage = {"prompt_tokens": len(user.split()), "completion_tokens": len(words)}
         self.wfile.write(f"data: {json.dumps({'choices': [], 'usage': usage})}\n\n".encode())
         self.wfile.write(b"data: [DONE]\n\n")
 

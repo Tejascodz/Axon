@@ -416,10 +416,13 @@ class AxonRAG:
         return hits
 
     def answer(self, q: str, k: int = 5, scan: bool = True, certificate: bool = True, max_tokens: int = 256,
-               tenant: str | None = None, require_citation: bool = True, verifier=None, **llm_kw) -> dict:
+               tenant: str | None = None, require_citation: bool = True, verifier=None, retrieve_kw: dict | None = None,
+               echo_filter: bool = False, vote: bool = False, **llm_kw) -> dict:
         """`verifier` (nyaya.verify.Verifier): also withhold answers whose claims the cited sources do
-        not support (claim-level check), not only answers without citations."""
-        hits = self.retrieve(q, k=k, tenant=tenant)
+        not support (claim-level check), not only answers without citations.
+        `retrieve_kw`: options for `retrieve`, e.g. {"hops": 2}.
+        `echo_filter`, `vote`: defences against planted documents (nyaya.defend); off by default."""
+        hits = self.retrieve(q, k=k, tenant=tenant, **(retrieve_kw or {}))
         sources = [{"id": h["id"], "title": h.get("source", ""), "text": h["text"]} for h in hits]
         withheld = []
         if scan:
@@ -427,6 +430,11 @@ class AxonRAG:
             RAG_EVENTS.inc(len(held), event="source_withheld")
             # say which source was withheld and why; its (possibly hostile) text is not sent back
             withheld = [{"id": h["id"], "title": h.get("title", ""), "flags": h["flags"]} for h in held]
+        if echo_filter:
+            from .defend import drop_echoes
+            sources, echoed = drop_echoes(sources, q)
+            RAG_EVENTS.inc(len(echoed), event="source_echoes_question")
+            withheld += [{"id": h["id"], "title": h.get("title", ""), "flags": ["restates the question"]} for h in echoed]
         cert = None
         if certificate and len(split_clauses(q)) > 1:
             keep = {s["id"] for s in sources}
@@ -446,6 +454,13 @@ class AxonRAG:
         if require_citation and not chk.abstained and not chk.cited:
             chk = guards.require_citation(chk)
             RAG_EVENTS.inc(event="uncited_answer_withheld")
+        voted = None
+        if vote and not chk.abstained:
+            from .defend import agree, isolate_and_vote
+            voted = isolate_and_vote(q, sources, **llm_kw)
+            if voted["majority"] is None or not agree(chk.answer, voted["majority"]):
+                chk = guards.withhold(f"Answer: {guards.INSUFFICIENT}\nEvidence: The sources disagree about the answer.")
+                RAG_EVENTS.inc(event="answer_withheld_sources_disagree")
         verdict = None
         if verifier is not None and not chk.abstained:
             t0 = time.perf_counter()
@@ -460,7 +475,7 @@ class AxonRAG:
         return {"answer": chk.answer, "abstained": chk.abstained, "text": chk.text, "check": chk.__dict__,
                 "sources": [{k2: h[k2] for k2 in ("id", "source", "text", "weakest", "conditions") if k2 in h}
                             for h in hits if h["id"] in {s["id"] for s in sources}],
-                "withheld": withheld, "certificate": cert,
+                "withheld": withheld, "certificate": cert, "vote": voted,
                 "verification": None if verdict is None else {"supported": verdict.supported, "reason": verdict.reason,
                                                               "claims": [(c.text, c.cited, c.score) for c in verdict.claims]},
                 "timing": {k2: t[k2] for k2 in ("ttft", "tpot", "e2e", "completion_tokens", "prompt_tokens")}}
