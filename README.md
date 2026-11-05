@@ -39,6 +39,7 @@ Details below.
 
 - [Use it](#use-it)
 - [The full RAG system](#the-full-rag-system)
+- [Run it in production](#run-it-in-production)
 - [How it works](#how-it-works)
 - [Results](#results)
 - [What did not work](#what-did-not-work)
@@ -77,7 +78,7 @@ for r in ax.rerank("Find a jacket that: 1. is waterproof, 2. is lightweight, 3. 
 - **How far to trust the certificate.**
   - When a document can be compared with one known to satisfy every condition, the condition whose score dropped most is the broken one 54–82% of the time (chance 10%).
   - From a single document alone, the `weakest` flag is right only 24–38% of the time, about as often as simple word overlap (26%). Treat it as a hint, not a verdict.
-- **HTTP service:** `AXON_MODEL=lightonai/LateOn uvicorn nyaya.server:app`, then `POST /rerank`, or `POST /ask` for full answers. It has optional API-key auth (`AXON_API_KEY`), a per-client rate limit, request size caps and Prometheus metrics at `/metrics`, and it binds to localhost.
+- **HTTP service:** `AXON_MODEL=lightonai/LateOn uvicorn nyaya.server:app`, then `POST /rerank`, or `POST /ask` for full answers. See [Run it in production](#run-it-in-production) for keys, readiness, back-pressure, logs and the Docker stack.
 - **Demo:** `python app.py` shows ColBERT and Axon side by side with evidence. It runs as a Hugging Face Space.
 
 ## The full RAG system
@@ -88,13 +89,13 @@ Every stage is written in this repository; the only outside pieces are the ColBE
 |---|---|---|
 | Ingestion | .txt, .md and .pdf files. Size and page limits are enforced, a PDF must carry a real PDF signature, symbolic links are not followed, and unreadable files are skipped and reported | `nyaya/rag.py`, `check_file` |
 | Chunking | Paragraph-first, 220-word chunks with a 40-word overlap | `nyaya/rag.py` |
-| Indexing | ColBERT token vectors for every chunk (no pickle; tensors only), BM25, and an optional PLAID index for approximate search over large collections | `nyaya/rag.py`, `build_axon` |
+| Indexing | ColBERT token vectors for every chunk, stored flat and memory-mapped (raw fp16, no pickle), BM25, and an optional PLAID index for approximate search over large collections. Incremental updates by file hash, compaction, and versioned files with one atomic commit | `nyaya/store.py`, `nyaya/index.py` |
 | Retrieval | BM25 and ColBERT search fused with reciprocal-rank fusion, then Axon re-ranking with per-condition evidence | `AxonRAG.retrieve` |
 | Tenant isolation | In a multi-tenant index (one folder per tenant), the tenant filter is applied inside both searches, before fusion and re-ranking, and checked again on every result. A query without a tenant is refused. On the server, each tenant has its own API key | `AxonRAG.tenant_mask`, `nyaya/server.py` |
 | Guardrails, input | Retrieved text is escaped, stripped of invisible characters and marked as data, never instructions. A scanner withholds passages that look like instructions aimed at the model, including system-prompt and key exfiltration attempts. It first normalises Unicode, so zero-width characters and look-alike letters do not hide an instruction | `nyaya/guards.py` |
 | Generation | Any OpenAI-compatible server: vLLM, SGLang (both benchmarked in round 5), a hosted API, or `nyaya.hf_server` (one request at a time, the baseline). Answers stream; each must cite its sources or reply INSUFFICIENT. For multi-condition questions, Axon's evidence certificate is passed to the model | `nyaya/llm.py`, `AxonRAG.answer` |
-| Guardrails, output | Citations to sources that were never shown are removed; sentences without a citation are reported | `guards.check_answer` |
-| Monitoring | Time to first token, inter-token latency, stage timings and guardrail events per answer, in Prometheus format at `/metrics` | `nyaya/metrics.py` |
+| Guardrails, output | Citations to sources that were never shown are removed, and an answer without a citation is withheld. An optional check of every claim against the passages it cites, with an NLI model or the LLM as judge, is off by default (round 7) | `guards.check_answer`, `nyaya/verify.py` |
+| Monitoring | Time to first token, inter-token latency, stage timings, guardrail events, index version and size, back-pressure and memory, in Prometheus format at `/metrics`. Grafana dashboard and alert rules in `deploy/` | `nyaya/metrics.py`, `deploy/` |
 | Load testing | Concurrency sweep with TTFT, inter-token latency, time per output token, throughput, GPU memory and utilisation, plus the server's own metrics | `nyaya/llm_bench.py` |
 | Fine-tuning | LoRA written out in full (no PEFT), fp16 with loss scaling for T4s, loss on the reply only, merged back into the weights so any server can load the result | `nyaya/lora.py` |
 | Evaluation | It measures:<ul><li>retrieval: Recall@5/10/20, MRR@10, nDCG@10, p50/p95/p99 latency</li><li>answers on HotpotQA: exact match, F1</li><li>citations: precision and recall</li><li>grounding: is the answer in the sources it cites, checked without an LLM judge</li><li>abstention when the evidence is withheld</li><li>attack success for 8 injection styles</li><li>cross-tenant leakage</li><li>the MultiConIR condition check</li></ul> | `nyaya/rag_eval.py`, `scripts/round5.py` |
@@ -184,6 +185,117 @@ The full system was measured on Kaggle T4 GPUs with Qwen3-4B-Instruct-2507 as th
 - The results cover one GPU type, one generator, and Wikipedia-style questions.
 - The injection scanner is a heuristic; the defences reduce attacks, they don't prevent them.
 - The "no citation, no answer" rule (`guards.require_citation`) is now on by default, but it was added after the first round 5 run; in this run no answer needed it.
+
+### Measured at scale (round 6)
+
+The same 700 questions, with the corpus grown from 6,852 to 300,000 HotpotQA paragraphs (round 5's paragraphs first, then the rest of HotpotQA). One T4 GPU; LateOn pinned to the commit used in round 5. Full results are in `results/r6_run1/` and `results/r7_run1/r6.json`.
+
+| Passages | Recall@100 (exact) | Exact search p50 / p95, vectors on the GPU | Same, vectors streamed from RAM | PLAID recall@100, p50 | Whole retrieval pipeline p50 / p95 |
+|---|---|---|---|---|---|
+| 6,852 | 0.992 | 32 / 35 ms | – | 0.993, 65 ms | 63 / 78 ms |
+| 100,000 | 0.976 | 119 / 157 ms | 694 ms | 0.974, 119 ms | 178 / 221 ms |
+| 150,000 | 0.971 | 168 / 224 ms | 1,020 ms | 0.971, **146 ms** | 236 / 294 ms |
+| 300,000 | 0.959 | 312 / 418 ms | 1,955 ms | not built | 401 / 508 ms |
+
+- **Recall holds up**: from 0.992 to 0.959 on a corpus 44 times larger.
+- **On a T4, exact search with the vectors on the GPU ties PLAID up to about 100,000 passages, and PLAID pulls ahead by 150,000** (13% faster median). Exact search grows linearly with the collection; PLAID grows more slowly. PLAID ran with PyLate's default search settings, untuned.
+- **Keep the vectors on the GPU**: streaming them from host memory for every query is 5.8–6.3 times slower. 300,000 passages take 7.3 GB, so a T4 with about 10 GB free holds roughly 400,000.
+- **Building PLAID dominates indexing**: about 47 minutes of clustering on the first 50,000 passages. Encoding runs at about 160 passages a second, so 300,000 passages encode in 31 minutes using 3 GB of host memory: vectors stream to disk as they are encoded.
+- **Incremental update, 1% of a 100,000-passage index** (500 files changed, 250 deleted, 250 added): **37 s, against 59 minutes to rebuild (96 times faster)**.
+  - Recall@100 was identical before, after the update and after compaction (0.9757).
+  - Deleted files came back in 0 of 100 queries for their own text.
+  - New files were found in the top 5 for 96% of queries, changed text for 94%.
+- **Compaction keeps the PLAID index**: 3.9 s on 20,000 passages, with recall unchanged. In round 6 it re-clustered from scratch and took 49 minutes; chunk ids are now stable, so it no longer has to.
+- **Re-ranking from the stored vectors is bit-identical to encoding the candidates again** (100 questions × 20 candidates: same scores, order and evidence).
+
+### Production checks (rounds 6b, 7 and 7b)
+
+The Axon server under load, as deployed: SGLang with Qwen3-4B on one T4, the Axon server on the other, four tenants each with their own key, a 29,000-passage index. Eight clients send questions back to back for 30 minutes. Results are in `results/r7b_run1/`.
+
+| | Round 7b |
+|---|---|
+| Requests answered | 2,952 of 2,958 (99.8%) |
+| Answer latency p50 / p95 / p99 (generation included) | 4.5 / 8.6 / 11.9 s |
+| Drift: median latency, first vs last 5 minutes | 4.49 s vs 4.50 s |
+| Cross-tenant results | **0** in 2,952 answers |
+| Index update while serving (200 files added, 100 deleted) | 19 s; served 2.3 s later; 0 errors during it |
+| Burst of 48 clients, server limit 16 at once | 19,337 extra requests refused with 503 within 197 ms (p99); 0 other errors; 0 errors in the minute after |
+| Server memory | 1.15 GB → 2.54 GB in the first 2.5 minutes (warm-up), then flat; +0.11 GB when the updated index loads |
+
+What these runs found, and what changed:
+- **The tokenizer was not safe under concurrent requests.** 0.2% of requests failed with Hugging Face's `Already borrowed` error. Two request threads were tokenizing at once with one shared fast tokenizer. Every tokenizer call now takes one lock. A test with a real (tiny) PyLate model fails 387 of 400 concurrent calls without the lock and none with it.
+- **One 15 GB GPU cannot hold the LLM server, the retriever, an index update and a claim checker together.** In round 7 this caused out-of-memory errors and a failed live update. The retriever and checker now take their own device (`AXON_DEVICE`, `AXON_VERIFY_DEVICE`), and an out-of-memory error returns a retryable 503 instead of a 502.
+- **The security upgrades broke the model.** Lifting PyLate's pinned sentence-transformers and transformers to their patched releases stops LateOn from loading. This was tested on Kaggle and reproduced offline. Those advisories are documented as accepted risks with mitigations (`deploy/overrides.txt`, `deploy/RUNBOOK.md`); only the ujson fix is applied.
+- **Mixed request lengths raise the inter-token p99** from 107 ms (fixed 128-token outputs, round 5) to 483 ms (short and long prompts, outputs of 32 to 512 tokens). SGLang's `--chunked-prefill-size 512` cut that only to 431 ms and made time to first token at p95 five to seven times worse, so the default stays.
+
+### Claim-level evidence checking (round 7)
+
+A citation shows which source an answer used, not that the source says what the answer claims. `nyaya/verify.py` checks every claim (each sentence of an answer) against the passages it cites, using either an NLI model (DeBERTa-v3-large) or the LLM as a judge. It can withhold answers with unsupported claims (`AXON_VERIFY=1`), but **it is off by default, because of the result below.**
+
+**Accuracy on labelled pairs.** HotpotQA supporting sentences paired with:
+- their own paragraph: supported;
+- a distractor paragraph from the same question: not supported;
+- the same paragraph, with a number or the answer changed: not supported.
+
+The threshold was chosen on 250 questions; results are on the other 250 (1,664 pairs).
+
+| | NLI checker | Qwen3-4B as judge |
+|---|---|---|
+| F1 (precision / recall) | 0.883 (0.933 / 0.838) | **0.967** (0.977 / 0.958) |
+| Bad claims caught: wrong source / changed number / changed answer | 98% / 95% / 94% | 98% / 99% / 100% |
+| Time per claim | 17 ms | 82 ms (16 at once) |
+
+**On round 5's real answers, support and correctness turn out to be different things.**
+
+| | NLI, base | NLI, fine-tuned | Judge, base | Judge, fine-tuned |
+|---|---|---|---|---|
+| Claims judged supported | 73% | 65% | 80% | 92% |
+| Exact match, answers judged supported vs not | 0.60 vs 0.53 | 0.61 vs 0.60 | 0.62 vs 0.47 | 0.61 vs 0.56 |
+| Withholding unsupported answers removes (wrong / right answers) | 49 / 55 | 84 / 124 | 47 / 42 | 28 / 35 |
+
+- The NLI checker rejects many evidence fragments; the fine-tuned model was trained to quote short, cut-off evidence. The judge does not reject them.
+- **Even the judge would remove about as many right answers as wrong ones.** Many wrong answers cite true evidence and then draw the wrong conclusion, a multi-hop reasoning error that a support check cannot see.
+- In a live server the check adds 114 ms (NLI) or 403 ms (judge) per answer.
+- **Pending:** 200 claims are being labelled by hand (`results/r7_run1/r7_label_sheet.csv`) to measure each checker's accuracy on real answers rather than on constructed pairs.
+
+**How sure the zero results are.** A count of 0 in n trials bounds the true rate below 3/n with 95% confidence:
+- 0 successful injections against the defended fine-tuned model in 200: at most 1.5%;
+- 0 cross-tenant results in 2,000 results (round 5): at most 0.15%;
+- 0 cross-tenant answers in 5,453 under load (rounds 7 and 7b): at most 0.06% per answer.
+
+## Run it in production
+
+`deploy/` holds a complete stack. Every published port binds to localhost; put a TLS proxy in front of Axon.
+- **Axon's Docker image**: non-root, read-only root filesystem, no capabilities, health check on `/ready`.
+- **Docker Compose**:
+  - SGLang or vLLM (pick one with `--profile`)
+  - Axon
+  - Prometheus with 15 alert rules, unit-tested with promtool
+  - Grafana with a provisioned dashboard
+
+```bash
+cp deploy/.env.example deploy/.env && deploy/make-secrets.sh
+python -m nyaya.rag build --src docs/ --out deploy/index
+docker compose -f deploy/docker-compose.yml --profile sglang up -d --build
+```
+
+- **Keys**:
+  - one key per tenant, or one for all;
+  - a separate key that can only read `/metrics` (for Prometheus);
+  - keys can be read from files (Docker or Kubernetes secrets) and rotate without a restart;
+  - with no key configured, the image refuses every request.
+- **Readiness and back-pressure**: `/health` says the process is up; `/ready` says the model and index are loaded. Past `AXON_MAX_INFLIGHT` concurrent `/ask` requests, the server answers 503 at once instead of queueing.
+- **Logs**: one JSON line per request with a request id (`X-Request-ID`). Questions, documents and keys are never logged.
+- **Calls to the LLM server**: transient failures are retried with backoff. After repeated failures a circuit breaker returns 503 for a cool-down period instead of piling requests onto a server that is down.
+- **Index lifecycle**:
+  - `python -m nyaya.rag update` re-encodes only changed files, and a running server switches to the new version in the background;
+  - `compact` drops deleted chunks;
+  - every change is one atomic commit, and a crash at any point leaves the previous version loadable.
+- **CI** (`.github/workflows/ci.yml`):
+  - lint, tests, bandit and pip-audit;
+  - promtool on the alert rules;
+  - an end-to-end job that builds the image, indexes documents with the real model inside it, starts the stack with a stand-in LLM, and checks auth, `/rerank`, `/ask`, quarantine of an injected document, logs, Prometheus scraping and the Grafana dashboard.
+- **Operations**: `deploy/RUNBOOK.md` covers deployment, key rotation, index changes, upgrades and rollback, and one section per alert.
 
 ## How it works
 
@@ -341,6 +453,15 @@ python scripts/round5.py            # writes results/ROUND5.md
 python scripts/round5.py --rebench  # serving benchmarks again from an earlier run's results/
 ```
 
+**Round 6** (the index at scale; about 3.5 h on one T4) and **round 7** (load test, mixed serving, claim checking; about 2.5 h on T4 x2; round 7 reads round 5's `results/r5_prompts.json` and generated answers):
+
+```bash
+python scripts/round6.py                                  # writes results/ROUND6.md
+python scripts/round7.py                                  # writes results/ROUND7.md
+R7_OUT=r7b.json python scripts/round7.py --rerun          # round 7b: the re-tests after the fixes
+python scripts/round7.py --smoke                          # a few minutes on CPU with stand-ins: checks the scripts
+```
+
 Checkpoints trained with `nyaya.train` still work with the RAG commands through `--ckpt`.
 
 ## Repository layout
@@ -348,10 +469,13 @@ Checkpoints trained with `nyaya.train` still work with the RAG commands through 
 ```
 nyaya/axon.py         Axon API: index, rerank, per-condition evidence certificates
 nyaya/planner.py      condition splitting: rules, or an LLM with a no-invented-requirements check
-nyaya/server.py       HTTP service: /rerank, /ask, /metrics; API key, rate limit, size caps
-nyaya/rag.py          chunking, indexing (exact or PLAID), hybrid retrieval, guarded generation
+nyaya/server.py       HTTP service: /rerank, /ask, /health, /ready, /metrics; keys, limits, back-pressure, logs
+nyaya/rag.py          chunking, hybrid retrieval, guarded generation, index CLI (build, update, compact, stats, ask)
+nyaya/store.py        token-vector store: flat, memory-mapped, streamed exact search, appends
+nyaya/index.py        index lifecycle: build, incremental update, compaction, atomic versioned commits
+nyaya/verify.py       claim-level evidence checking (NLI or LLM judge)
 nyaya/guards.py       prompt format, prompt-injection scanner, citation checker
-nyaya/llm.py          OpenAI-compatible client with streaming and per-request timing
+nyaya/llm.py          OpenAI-compatible client: streaming, per-request timing, retries, circuit breaker
 nyaya/llm_bench.py    serving load test: TTFT, inter-token latency, throughput, GPU use
 nyaya/metrics.py      Prometheus metrics, no dependencies
 nyaya/hf_server.py    one-request-at-a-time transformers server (baseline and fallback)
@@ -368,13 +492,17 @@ scripts/round2.py     main experiment: three models, paired bootstrap intervals
 scripts/round4.py     Competitive MaxSim, violated-condition localization, lead-in control, latency
 scripts/round5.py     the full RAG system: vLLM serving, answers, guardrails, fine-tuning (one run)
 scripts/r5_steps.py   round 5 steps: retrieve, training data, generate, benchmark
+scripts/round6.py     the index at scale: exact vs PLAID up to 300,000 passages, update, compaction
+scripts/round7.py     load test, mixed serving, claim checking; --rerun for round 7b
+deploy/               Dockerfile, Compose stack, Prometheus alerts and tests, Grafana dashboard, runbook
 app.py                demo: ColBERT vs Axon with evidence (Gradio)
 pyproject.toml        package (pip install), extras for server, demo, evaluation
 scripts/kaggle_run.py multi-GPU job queue for unattended runs (training-free + fine-tuning)
 scripts/eval_suite.py one evaluation entry point for checkpoints and released models
 scripts/prep_data.py  dataset and model downloads
-tests/                scoring, evidence, planner, guardrail, metrics, LoRA and server tests
-.github/workflows/    CI: lint and tests on CPU
+tests/                scoring, evidence, planner, guardrails, metrics, LoRA, server, index, store,
+                      claim checking, retries and concurrency tests
+.github/workflows/    CI: lint, tests, security scans, alert-rule tests, Docker end-to-end
 ```
 
 ## Security notes
@@ -388,6 +516,8 @@ tests/                scoring, evidence, planner, guardrail, metrics, LoRA and s
 - Ingestion enforces file-size and PDF-page limits and checks the PDF signature instead of trusting the extension. Symbolic links and linked folders are not followed.
 - Fine-tuned weights are saved as safetensors (no pickle).
 - The experiment runner quotes every user-supplied value before it reaches the shell, and runs servers and installs without a shell.
+- Models load by pinned commit (`AXON_MODEL_REVISION`), and an index records the model and commit it was built with: a server or update with a different model is refused, since the vectors would not be comparable.
+- Dependencies are checked by pip-audit in CI. Advisories that cannot be fixed without breaking the model are listed with their mitigations in `deploy/overrides.txt`; any other advisory fails the build.
 
 ## Experiment log
 
@@ -442,6 +572,10 @@ Full LIMIT (50k documents): R@2 0.744, R@10 0.898. NanoBEIR (SciFact, NFCorpus, 
 - Latency, 100 candidates: about 28–31 ms per query on a T4.
 
 Full tables are in `results/ROUND4.md`.
+
+**Round 6, Kaggle T4** (index at scale): see "Measured at scale". The 300,000-passage run was cut to 150,000 by the script's build-time limit (PLAID's clustering made the 100,000 build take 59 minutes), and run later without PLAID in round 7. Round 6's dependency check failed twice: once on GPU memory (the measuring process still held 14 GB), then because the patched sentence-transformers cannot load LateOn.
+
+**Round 7 / 7b, Kaggle T4 x2**: see "Production checks" and "Claim-level evidence checking". Round 7's load test found GPU out-of-memory errors (everything on one GPU), a live update that failed for the same reason, and an artefact in how tenants were assigned. Round 7b re-ran it after the fixes and found the tokenizer concurrency bug.
 
 MultiConIR's "T2 Positive > HN1" uses the same document pairs as "T1 with 10 conditions", so it is reported once.
 
