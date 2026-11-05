@@ -1,0 +1,9 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/134 [00:00<?, ?it/s]Loading weights: 100%|██████████| 134/134 [00:00<00:00, 2960.22it/s]
+19:01:56 encoded 32/7152
+19:03:48 encoded 6432/7152
+19:04:01 encoded 32/7152
+19:05:53 encoded 6432/7152
+19:10:44 poisoning clean: {"none": {"exact_match": 0.27, "false_answer_given": 0.0, "abstained": 0.46, "errors": 0}, "echo_filter": {"exact_match": 0.26, "false_answer_given": 0.0, "abstained": 0.5, "errors": 0}, "vote": {"exact_match": 0.02, "false_answer_given": 0.0, "abstained": 0.95, "errors": 0}}
+19:15:59 poisoning echo: {"planted_in_top5_any": 1.0, "planted_in_top5_mean": 3.0, "none": {"exact_match": 0.27, "false_answer_given": 0.17, "abstained": 0.19, "errors": 0}, "echo_filter": {"exact_match": 0.27, "false_answer_given": 0.0, "abstained": 0.55, "errors": 0}, "vote": {"exact_match": 0.09, "false_answer_given": 0.17, "abstained": 0.66, "errors": 0}}
+19:21:03 poisoning no_echo: {"planted_in_top5_any": 1.0, "planted_in_top5_mean": 2.93, "none": {"exact_match": 0.26, "false_answer_given": 0.14, "abstained": 0.23, "errors": 0}, "echo_filter": {"exact_match": 0.26, "false_answer_given": 0.1, "abstained": 0.34, "errors": 0}, "vote": {"exact_match": 0.08, "false_answer_given": 0.14, "abstained": 0.7, "errors": 0}}

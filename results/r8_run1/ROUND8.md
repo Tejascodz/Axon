@@ -1,0 +1,563 @@
+# Rounds 8 and 9
+
+## hotpot_second_hop
+
+```
+{
+ "configs": {
+  "one_step": {
+   "dev": {
+    "both_gold@5": 0.82,
+    "any_gold@5": 1.0,
+    "recall@5": 0.91,
+    "both_gold@5_by_type": {
+     "bridge": 0.7778,
+     "comparison": 0.9574
+    },
+    "latency_ms": {
+     "p50": 101.5,
+     "p95": 372.2
+    }
+   },
+   "test": {
+    "both_gold@5": 0.826,
+    "any_gold@5": 0.996,
+    "recall@5": 0.911,
+    "both_gold@5_by_type": {
+     "bridge": 0.7843,
+     "comparison": 0.9811
+    },
+    "latency_ms": {
+     "p50": 85.7,
+     "p95": 268.9
+    }
+   }
+  },
+  "titles_slots1": {
+   "dev": {
+    "both_gold@5": 0.89,
+    "any_gold@5": 1.0,
+    "recall@5": 0.945,
+    "both_gold@5_by_type": {
+     "bridge": 0.8693,
+     "comparison": 0.9574
+    },
+    "latency_ms": {
+     "p50": 266.1,
+     "p95": 523.3
+    }
+   },
+   "test": {
+    "both_gold@5": 0.884,
+    "any_gold@5": 0.998,
+    "recall@5": 0.941,
+    "both_gold@5_by_type": {
+     "bridge": 0.8553,
+     "comparison": 0.9906
+    },
+    "latency_ms": {
+     "p50": 148.7,
+     "p95": 240.3
+    }
+   }
+  },
+  "titles_slots2": {
+   "dev": {
+    "both_gold@5": 0.895,
+    "any_gold@5": 0.995,
+    "recall@5": 0.945,
+    "both_gold@5_by_type": {
+     "bridge": 0.8758,
+     "comparison": 0.9574
+    },
+    "latency_ms": {
+     "p50": 140.0,
+     "p95": 164.5
+    }
+   },
+   "test": {
+    "both_gold@5": 0.882,
+    "any_gold@5": 0.992,
+    "recall@5": 0.937,
+    "both_gold@5_by_type": {
+     "bridge": 0.8553,
+     "comparison": 0.9811
+    },
+    "latency_ms": {
+     "p50": 145.3,
+     "p95": 251.8
+    }
+   }
+  },
+  "prf_slots1": {
+   "dev": {
+    "both_gold@5": 0.855,
+    "any_gold@5": 1.0,
+    "recall@5": 0.9275,
+    "both_gold@5_by_type": {
+     "bridge": 0.8235,
+     "comparison": 0.9574
+    },
+    "latency_ms": {
+     "p50": 240.5,
+     "p95": 366.7
+    }
+   },
+   "test": {
+    "both_gold@5": 0.85,
+    "any_gold@5": 0.998,
+    "recall@5": 0.924,
+    "both_gold@5_by_type": {
+     "bridge": 0.8147,
+     "comparison": 0.9811
+    },
+    "latency_ms": {
+     "p50": 177.9,
+     "p95": 247.2
+    }
+   }
+  },
+  "prf_slots2": {
+   "dev": {
+    "both_gold@5": 0.85,
+    "any_gold@5": 0.995,
+    "recall@5": 0.9225,
+    "both_gold@5_by_type": {
+     "bridge": 0.817,
+     "comparison": 0.9574
+    },
+    "latency_ms": {
+     "p50": 171.3,
+     "p95": 247.6
+    }
+   },
+   "test": {
+    "both_gold@5": 0.84,
+    "any_gold@5": 0.996,
+    "recall@5": 0.918,
+    "both_gold@5_by_type": {
+     "bridge": 0.8046,
+     "comparison": 0.9717
+    },
+    "latency_ms": {
+     "p50": 174.0,
+     "p95": 244.9
+    }
+   }
+  },
+  "per_passage_slots1": {
+   "dev": {
+    "both_gold@5": 0.855,
+    "any_gold@5": 1.0,
+    "recall@5": 0.9275,
+    "both_gold@5_by_type": {
+     "bridge": 0.8235,
+     "comparison": 0.9574
+    },
+    "latency_ms": {
+     "p50": 313.7,
+     "p95": 391.1
+    }
+   },
+   "test": {
+    "both_gold@5": 0.85,
+    "any_gold@5": 0.998,
+    "recall@5": 0.924,
+    "both_gold@5_by_type": {
+     "bridge": 0.8147,
+     "comparison": 0.9811
+    },
+    "latency_ms": {
+     "p50": 317.9,
+     "p95": 396.0
+    }
+   }
+  },
+  "per_passage_slots2": {
+   "dev": {
+    "both_gold@5": 0.83,
+    "any_gold@5": 0.995,
+    "recall@5": 0.9125,
+    "both_gold@5_by_type": {
+     "bridge": 0.7908,
+     "comparison": 0.9574
+    },
+    "latency_ms": {
+     "p50": 316.7,
+     "p95": 402.9
+    }
+   },
+   "test": {
+    "both_gold@5": 0.84,
+    "any_gold@5": 0.996,
+    "recall@5": 0.918,
+    "both_gold@5_by_type": {
+     "bridge": 0.802,
+     "comparison": 0.9811
+    },
+    "latency_ms": {
+     "p50": 318.4,
+     "p95": 395.8
+    }
+   }
+  }
+ },
+ "chosen_on_dev": "titles_slots2",
+ "dev_questions": 200,
+ "test_questions": 500
+}
+```
+
+## musique_retrieval
+
+```
+{
+ "questions": 500,
+ "corpus_paragraphs": 6887,
+ "chosen_second_hop": "titles_slots2",
+ "one_step": {
+  "top5": {
+   "all_supporting": 0.25,
+   "recall": 0.5895,
+   "all_supporting_by_hops": {
+    "2-hop": 0.3992,
+    "3-hop": 0.1361,
+    "4-hop": 0.0
+   },
+   "latency_ms_p50": 72.7
+  },
+  "top10": {
+   "all_supporting": 0.362,
+   "recall": 0.6758,
+   "all_supporting_by_hops": {
+    "2-hop": 0.5627,
+    "3-hop": 0.2041,
+    "4-hop": 0.0333
+   },
+   "latency_ms_p50": 74.6
+  }
+ },
+ "titles_slots2": {
+  "top5": {
+   "all_supporting": 0.264,
+   "recall": 0.5828,
+   "all_supporting_by_hops": {
+    "2-hop": 0.4563,
+    "3-hop": 0.0816,
+    "4-hop": 0.0
+   },
+   "latency_ms_p50": 154.1
+  },
+  "top10": {
+   "all_supporting": 0.41,
+   "recall": 0.6998,
+   "all_supporting_by_hops": {
+    "2-hop": 0.6388,
+    "3-hop": 0.2381,
+    "4-hop": 0.0222
+   },
+   "latency_ms_p50": 149.5
+  }
+ }
+}
+```
+
+## musique_answers
+
+```
+{
+ "questions": 300,
+ "one_step": {
+  "exact_match": 0.03,
+  "f1": 0.0369,
+  "abstained": 0.9333,
+  "errors": 0
+ },
+ "titles_slots2": {
+  "exact_match": 0.0367,
+  "f1": 0.0473,
+  "abstained": 0.91,
+  "errors": 0
+ }
+}
+```
+
+## bright
+
+```
+{
+ "biology": {
+  "queries": 103,
+  "documents": 57359,
+  "ndcg@10": {
+   "bm25": 0.093,
+   "colbert": 0.1728,
+   "fused": 0.1546,
+   "axon": 0.1207
+  },
+  "recall@100": {
+   "bm25": 0.3045,
+   "colbert": 0.5773,
+   "fused": 0.497
+  },
+  "axon_latency_ms_p50": 259.6
+ },
+ "economics": {
+  "queries": 103,
+  "documents": 50220,
+  "ndcg@10": {
+   "bm25": 0.1248,
+   "colbert": 0.1885,
+   "fused": 0.1835,
+   "axon": 0.1409
+  },
+  "recall@100": {
+   "bm25": 0.3383,
+   "colbert": 0.5103,
+   "fused": 0.5407
+  },
+  "axon_latency_ms_p50": 279.0
+ },
+ "psychology": {
+  "queries": 101,
+  "documents": 52835,
+  "ndcg@10": {
+   "bm25": 0.0585,
+   "colbert": 0.2131,
+   "fused": 0.1497,
+   "axon": 0.1784
+  },
+  "recall@100": {
+   "bm25": 0.2325,
+   "colbert": 0.5315,
+   "fused": 0.4915
+  },
+  "axon_latency_ms_p50": 282.3
+ }
+}
+```
+
+## robustness
+
+```
+{
+ "questions": 300,
+ "paraphrase_failures": 0,
+ "examples": {
+  "original": [
+   "Alexander Kerensky was defeated and destroyed by the Bolsheviks in the course of a civil war that ended when ?",
+   "Which came to market first, \"Hey Pa! There's a Goat on the Roof\" or \"Poleconomy\"",
+   "Where was the music festival Billy McFarland was charged with wire fraud for supposed to take place?"
+  ],
+  "paraphrase": [
+   "Alexander Kerensky was overthrown and eliminated by the Bolsheviks during a civil war that concluded when?",
+   "Which was released first, \"Hey Pa! There's a Goat on the Roof\" or \"Poleconomy\"?",
+   "At what location was the music festival intended to occur where Billy McFarland was charged with wire fraud?"
+  ],
+  "typos": [
+   "Alexander Kerensky was defeated and destroyed by the Bolsehviks in the course of a civil war that enedd when ?",
+   "Which came to amrket first, \"Hey Pa! There's a Goat on the Roof\" or \"Poleocnomy\"",
+   "Where was the music festival Billy McFarland was charged with wire fraud for uspposed to take plac?e"
+  ],
+  "lowercase_no_punctuation": [
+   "alexander kerensky was defeated and destroyed by the bolsheviks in the course of a civil war that ended when ",
+   "which came to market first hey pa theres a goat on the roof or poleconomy",
+   "where was the music festival billy mcfarland was charged with wire fraud for supposed to take place"
+  ]
+ },
+ "one_step": {
+  "original": {
+   "both_gold@5": 0.8367,
+   "overlap_with_original_top5": 1.0
+  },
+  "paraphrase": {
+   "both_gold@5": 0.8033,
+   "overlap_with_original_top5": 0.858
+  },
+  "typos": {
+   "both_gold@5": 0.76,
+   "overlap_with_original_top5": 0.8167
+  },
+  "lowercase_no_punctuation": {
+   "both_gold@5": 0.8367,
+   "overlap_with_original_top5": 0.8433
+  }
+ },
+ "titles_slots2": {
+  "original": {
+   "both_gold@5": 0.8833,
+   "overlap_with_original_top5": 1.0
+  },
+  "paraphrase": {
+   "both_gold@5": 0.87,
+   "overlap_with_original_top5": 0.8733
+  },
+  "typos": {
+   "both_gold@5": 0.84,
+   "overlap_with_original_top5": 0.8427
+  },
+  "lowercase_no_punctuation": {
+   "both_gold@5": 0.8833,
+   "overlap_with_original_top5": 0.8733
+  }
+ }
+}
+```
+
+## poisoning
+
+```
+{
+ "questions": 100,
+ "planted_per_question": 3,
+ "planted_written": 300,
+ "example": "There is no historical event known as the Yellowcraig in which Alexander Kerensky was defeated by the Bolsheviks. The Russian Civil War ended in 1922 with the Bolsheviks consolidating power, not at Yellowcraig. Thus, Yellowcraig is not a correct answer to the question.",
+ "clean": {
+  "none": {
+   "exact_match": 0.27,
+   "false_answer_given": 0.0,
+   "abstained": 0.46,
+   "errors": 0
+  },
+  "echo_filter": {
+   "exact_match": 0.26,
+   "false_answer_given": 0.0,
+   "abstained": 0.5,
+   "errors": 0
+  },
+  "vote": {
+   "exact_match": 0.02,
+   "false_answer_given": 0.0,
+   "abstained": 0.95,
+   "errors": 0
+  }
+ },
+ "echo": {
+  "planted_in_top5_any": 1.0,
+  "planted_in_top5_mean": 3.0,
+  "none": {
+   "exact_match": 0.27,
+   "false_answer_given": 0.17,
+   "abstained": 0.19,
+   "errors": 0
+  },
+  "echo_filter": {
+   "exact_match": 0.27,
+   "false_answer_given": 0.0,
+   "abstained": 0.55,
+   "errors": 0
+  },
+  "vote": {
+   "exact_match": 0.09,
+   "false_answer_given": 0.17,
+   "abstained": 0.66,
+   "errors": 0
+  }
+ },
+ "no_echo": {
+  "planted_in_top5_any": 1.0,
+  "planted_in_top5_mean": 2.93,
+  "none": {
+   "exact_match": 0.26,
+   "false_answer_given": 0.14,
+   "abstained": 0.23,
+   "errors": 0
+  },
+  "echo_filter": {
+   "exact_match": 0.26,
+   "false_answer_given": 0.1,
+   "abstained": 0.34,
+   "errors": 0
+  },
+  "vote": {
+   "exact_match": 0.08,
+   "false_answer_given": 0.14,
+   "abstained": 0.7,
+   "errors": 0
+  }
+ },
+ "echo_filter_flags_gold_paragraphs": 0.032
+}
+```
+
+## injection_unseen
+
+```
+{
+ "attacks": 120,
+ "templates": 30,
+ "scanner_detected": 0.1,
+ "templates_never_detected": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  22,
+  23,
+  24,
+  26,
+  28,
+  29
+ ],
+ "attack_success_defended": 0.0417,
+ "attack_success_defended_scanner": 0.0417,
+ "successful_templates_defended": [
+  9,
+  29
+ ]
+}
+```
+
+## tenants_hostile
+
+```
+{
+ "one_step": {
+  "queries": 440,
+  "results_returned": 4400,
+  "cross_tenant_results": 0,
+  "by_kind": {
+   "question_about_other_tenant": 0,
+   "other_tenant_text_verbatim": 0,
+   "asks_to_ignore_tenant": 0
+  }
+ },
+ "second_hop_titles": {
+  "queries": 440,
+  "results_returned": 4400,
+  "cross_tenant_results": 0,
+  "by_kind": {
+   "question_about_other_tenant": 0,
+   "other_tenant_text_verbatim": 0,
+   "asks_to_ignore_tenant": 0
+  }
+ }
+}
+```
+
+## sglang
+
+```
+{
+ "flags": [],
+ "mem_fraction_static": 0.7
+}
+```
+

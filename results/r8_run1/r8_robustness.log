@@ -1,0 +1,4 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/134 [00:00<?, ?it/s]Loading weights: 100%|██████████| 134/134 [00:00<00:00, 3237.00it/s]
+19:23:33 robustness one_step: {"original": {"both_gold@5": 0.8367, "overlap_with_original_top5": 1.0}, "paraphrase": {"both_gold@5": 0.8033, "overlap_with_original_top5": 0.858}, "typos": {"both_gold@5": 0.76, "overlap_with_original_top5": 0.8167}, "lowercase_no_punctuation": {"both_gold@5": 0.8367, "overlap_with_original_top5": 0.8433}}
+19:26:07 robustness titles_slots2: {"original": {"both_gold@5": 0.8833, "overlap_with_original_top5": 1.0}, "paraphrase": {"both_gold@5": 0.87, "overlap_with_original_top5": 0.8733}, "typos": {"both_gold@5": 0.84, "overlap_with_original_top5": 0.8427}, "lowercase_no_punctuation": {"both_gold@5": 0.8833, "overlap_with_original_top5": 0.8733}}

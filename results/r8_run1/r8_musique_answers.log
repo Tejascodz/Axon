@@ -1,0 +1,4 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/134 [00:00<?, ?it/s]Loading weights: 100%|██████████| 134/134 [00:00<00:00, 2761.24it/s]
+19:29:44 musique answers one_step: {'exact_match': 0.03, 'f1': 0.0369, 'abstained': 0.9333, 'errors': 0}
+19:33:12 musique answers titles_slots2: {'exact_match': 0.0367, 'f1': 0.0473, 'abstained': 0.91, 'errors': 0}
