@@ -59,7 +59,8 @@ def answer_value(reply: str) -> str | None:
 
 def claims(reply: str) -> list[Claim]:
     """Every factual sentence of the reply, except the short "Answer:" line, with the citations it
-    carries. A citation at the end of a line applies to that line's last sentence. An abstention
+    carries. Citations after a run of sentences cover the whole run ("A. B. [c1]" cites c1 for both
+    A and B), the usual convention; sentences after the last citation of a line stay uncited. An abstention
     makes no claims: its explanation of what is missing is not a statement about the world."""
     ans = answer_value(reply)
     if ans and guards.INSUFFICIENT.lower() in ans.lower():
@@ -70,12 +71,18 @@ def claims(reply: str) -> list[Claim]:
         if not line or _ANSWER.match(line):
             continue
         line = re.sub(r"^\s*\**\s*evidence\s*\**\s*:\s*", "", line, flags=re.I)
+        pending = []                                   # sentences waiting for the next citation in the line
         for sent in _SENT.split(line):
             cited = list(dict.fromkeys(_CITE.findall(sent)))
             text = re.sub(r"\s+([.,;:!?])", r"\1", " ".join(_CITE.sub("", sent).split()))
-            if len(text.split()) < 3 or guards.INSUFFICIENT.lower() in text.lower():
-                continue
-            out.append(Claim(text=text, cited=cited))
+            if len(text.split()) >= 3 and guards.INSUFFICIENT.lower() not in text.lower():
+                out.append(Claim(text=text, cited=cited))
+                if not cited:
+                    pending.append(out[-1])
+            if cited:
+                for c in pending:
+                    c.cited = list(cited)
+                pending = []
     return out
 
 
@@ -132,12 +139,16 @@ class Verifier:
             cs[i].score = p
         for cl in cs:
             cl.supported = cl.score is not None and cl.score >= self.threshold
-        cited_text = " ".join(text_of[c] for cl in cs for c in cl.cited if c in text_of)
+        cited_text = " ".join(text_of[c] for c in dict.fromkeys(_CITE.findall(reply)) if c in text_of)
         ans = answer_value(reply)
-        in_src = bool(ans) and _norm(ans) in _norm(cited_text) if ans and ans.lower() not in ("yes", "no") else None
-        ok = bool(cs) and all(c.supported for c in cs) and in_src is not False
-        why = ("no claims" if not cs else "uncited or unsupported claim" if not all(c.supported for c in cs)
-               else "answer not in cited sources" if in_src is False else "")
+        in_src = (_norm(ans) in _norm(cited_text)) if ans and ans.lower() not in ("yes", "no") else None
+        if not cs:                                     # nothing but "Answer: X [c#]": X must be in what it cites
+            ok = in_src is True
+            why = "" if ok else "no evidence sentence, and the answer is not in a cited source"
+        else:
+            ok = all(c.supported for c in cs) and in_src is not False
+            why = ("uncited or unsupported claim" if not all(c.supported for c in cs)
+                   else "answer not in cited sources" if in_src is False else "")
         return Verdict(supported=ok, abstained=False, claims=cs, answer_in_sources=in_src, reason=why)
 
 

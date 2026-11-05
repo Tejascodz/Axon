@@ -704,3 +704,7 @@ def test_claims_split_and_verdict_with_stub_nli():
     assert not v.check("Answer: 1922\nEvidence: The war ended in October 1922.", src).supported   # uncited claim
     assert v.check("Answer: INSUFFICIENT\nEvidence: missing.", src).abstained
     assert verify.calibrate([0.9, 0.8, 0.3, 0.2], [True, True, False, False]) == 0.8
+    run = verify.claims("Answer: X\nEvidence: The war began in 1917. The war ended in 1922 [c1][c3]. Then peace came.")
+    assert [c.cited for c in run] == [["c1", "c3"], ["c1", "c3"], []]          # an end citation covers its run
+    assert v.check("Answer: 1922 [c3]", src).supported                          # no evidence sentence: answer in source
+    assert not v.check("Answer: 1950 [c3]", src).supported
