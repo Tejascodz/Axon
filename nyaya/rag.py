@@ -314,11 +314,11 @@ class AxonRAG:
             RAG_EVENTS.inc(event="plaid_empty_fallback_exact")          # never return nothing silently
         return self.ax.search_store(q, s.store, k=depth, allowed=allowed, gpu_budget_gb=s.gpu_budget_gb)
 
-    def _fused(self, s, q, depth, rrf_k, approximate, allowed):
+    def _fused(self, s, q, depth, rrf_k, approximate, allowed, q_keywords=None):
         fused = defaultdict(float)
         lists = [(self.first_stage(q, depth, approximate, allowed), 1.0)]
         if self.bm25_weight > 0:
-            lists.append((s.bm25.search(q, depth, allowed=allowed), self.bm25_weight))
+            lists.append((s.bm25.search(q if q_keywords is None else q_keywords, depth, allowed=allowed), self.bm25_weight))
         for ranked, w in lists:
             for r, i in enumerate(ranked, 1):
                 fused[i] += w / (rrf_k + r)
@@ -359,7 +359,7 @@ class AxonRAG:
     def retrieve(self, q: str, k: int = 5, depth: int = 100, rrf_k: int = 60, conditions=None,
                  method: str | None = None, approximate: bool | None = None, rerank: bool = True,
                  tenant: str | None = None, hops: int = 1, hop_mode: str = "titles", hop_from: int = 2,
-                 hop_slots: int = 2) -> list[dict]:
+                 hop_slots: int = 2, expansion: str | None = None, expand_mode: str = "bm25") -> list[dict]:
         """Tenant and deletion filters apply inside both searches, before fusion and re-ranking, and
         every result is checked again before it is returned.
 
@@ -371,17 +371,22 @@ class AxonRAG:
           hop_mode="per_passage"   one second search per passage, question plus that passage
         The first step keeps its top k - hop_slots places; the best `hop_slots` passages the second
         step adds (not already there) fill the rest. Reserved places, not rank fusion: fusion favours
-        passages both steps return, which are rarely the missing one. Off by default (round 8)."""
+        passages both steps return, which are rarely the missing one. Off by default (round 8).
+
+        `expansion`: LLM-written text about what an answer involves (nyaya.expand.expand), searched
+        for as `expand_mode` says (nyaya.expand.queries)."""
+        from .expand import queries
         s = self._s                                                   # one snapshot for the whole request
         allowed = self.tenant_mask(tenant)
+        q_vec, q_kw, q_rr = queries(q, expansion, expand_mode)
         t0 = time.perf_counter()
-        cand, fused = self._fused(s, q, depth, rrf_k, approximate, allowed)
+        cand, fused = self._fused(s, q_vec, depth, rrf_k, approximate, allowed, q_kw)
         t1 = time.perf_counter()
         if not cand:
             return []
         if not rerank:                                                  # ablation: fused first stage only
             return [{**s.chunks[i], "score": fused[i], "weakest": None, "conditions": []} for i in cand[:k]]
-        first = self._reranked(s, q, cand, max(k, 20) if hops > 1 else k, conditions, method)
+        first = self._reranked(s, q_rr, cand, max(k, 20) if hops > 1 else k, conditions, method)
         t2 = time.perf_counter()
         RAG_STAGE.observe(t1 - t0, stage="first_stage")
         RAG_STAGE.observe(t2 - t1, stage="rerank")
@@ -426,15 +431,53 @@ class AxonRAG:
                          if r is not None else [], **({"hop": 2} if r is None else {})})
         return hits
 
+    def retrieve_iterative(self, q: str, k: int = 5, follow_ups: int = 2, slots: int | None = None,
+                           tenant: str | None = None, llm_kw: dict | None = None, **kw) -> tuple[list[dict], list[str]]:
+        """Retrieve, then up to `follow_ups` times ask the LLM for the next search query
+        (nyaya.expand.follow_up) and give the best `slots` new passages it finds places in the top k
+        (the first search keeps the rest). Returns (hits, the follow-up queries asked)."""
+        from .expand import follow_up
+        slots = slots or max(1, k // 5)
+        first = self.retrieve(q, k=k, tenant=tenant, **kw)
+        extra, asked = [], []
+        for _ in range(follow_ups):
+            if len(extra) + slots >= k:
+                break
+            now = first[:k - len(extra)] + extra
+            fq = follow_up(q, [h["text"] for h in now], **(llm_kw or {}))
+            if not fq:
+                break
+            asked.append(fq)
+            have = {h["id"] for h in first[:k - len(extra) - slots]} | {h["id"] for h in extra}
+            new = [h for h in self.retrieve(fq, k=k, tenant=tenant, **kw) if h["id"] not in have][:slots]
+            if not new:
+                continue
+            extra += [{**h, "follow_up": len(asked)} for h in new]
+        RAG_EVENTS.inc(len(asked), event="follow_up_query")
+        return first[:k - len(extra)] + extra, asked
+
     def answer(self, q: str, k: int = 5, scan: bool = True, certificate: bool = True, max_tokens: int = 256,
                tenant: str | None = None, require_citation: bool = True, verifier=None, retrieve_kw: dict | None = None,
-               echo_filter: bool = False, vote: bool = False, dedupe: float | None = None, **llm_kw) -> dict:
+               echo_filter: bool = False, vote: bool = False, dedupe: float | None = None, expand: str | None = None,
+               follow_ups: int = 0, detector=None, **llm_kw) -> dict:
         """`verifier` (nyaya.verify.Verifier): also withhold answers whose claims the cited sources do
         not support (claim-level check), not only answers without citations.
         `retrieve_kw`: options for `retrieve`, e.g. {"hops": 2}.
         `echo_filter`, `vote`, `dedupe` (a cosine threshold): defences against planted documents
-        (nyaya.defend); off by default."""
-        hits = self.retrieve(q, k=2 * k if dedupe else k, tenant=tenant, **(retrieve_kw or {}))
+        (nyaya.defend); off by default.
+        `expand` (a mode of nyaya.expand.queries) and `follow_ups` (a number of LLM-written follow-up
+        searches): LLM query rewriting before and between searches; off by default.
+        `detector` (nyaya.injection.Classifier or LLMDetector): withhold sources it flags, in addition
+        to the pattern scanner."""
+        rkw, asked = dict(retrieve_kw or {}), []
+        if expand:
+            from .expand import expand as write_expansion
+            rkw.update(expansion=write_expansion(q, **llm_kw), expand_mode=expand)
+        n = 2 * k if dedupe else k
+        if follow_ups:
+            hits, asked = self.retrieve_iterative(q, k=n, follow_ups=follow_ups, tenant=tenant, llm_kw=llm_kw, **rkw)
+        else:
+            hits = self.retrieve(q, k=n, tenant=tenant, **rkw)
         if dedupe:
             from .defend import drop_near_duplicates
             s = self._s
@@ -445,7 +488,7 @@ class AxonRAG:
         sources = [{"id": h["id"], "title": h.get("source", ""), "text": h["text"]} for h in hits]
         withheld = []
         if scan:
-            sources, held = guards.quarantine(sources)
+            sources, held = guards.quarantine(sources, detector)
             RAG_EVENTS.inc(len(held), event="source_withheld")
             # say which source was withheld and why; its (possibly hostile) text is not sent back
             withheld = [{"id": h["id"], "title": h.get("title", ""), "flags": h["flags"]} for h in held]
@@ -494,7 +537,7 @@ class AxonRAG:
         return {"answer": chk.answer, "abstained": chk.abstained, "text": chk.text, "check": chk.__dict__,
                 "sources": [{k2: h[k2] for k2 in ("id", "source", "text", "weakest", "conditions") if k2 in h}
                             for h in hits if h["id"] in {s["id"] for s in sources}],
-                "withheld": withheld, "certificate": cert, "vote": voted,
+                "withheld": withheld, "certificate": cert, "vote": voted, "follow_up_queries": asked,
                 "verification": None if verdict is None else {"supported": verdict.supported, "reason": verdict.reason,
                                                               "claims": [(c.text, c.cited, c.score) for c in verdict.claims]},
                 "timing": {k2: t[k2] for k2 in ("ttft", "tpot", "e2e", "completion_tokens", "prompt_tokens")}}

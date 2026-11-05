@@ -462,6 +462,14 @@ R7_OUT=r7b.json python scripts/round7.py --rerun          # round 7b: the re-tes
 python scripts/round7.py --smoke                          # a few minutes on CPU with stand-ins: checks the scripts
 ```
 
+**Rounds 8 and 9** (second hop, MuSiQue, BRIGHT, robustness, poisoning, unseen injections, hostile tenants) and **round 10** (fixes for what they found: BM25 analysis and weight, re-rank choice, LLM query expansion, LLM follow-up searches, near-duplicate filter, learned injection detectors), Kaggle T4 x2, internet on:
+
+```bash
+python scripts/round8.py            # writes results/ROUND8.md (about 2.5 h)
+python scripts/round10.py           # writes results/ROUND10.md (about 3 h)
+python scripts/round10.py --smoke   # a few minutes on CPU with stand-ins
+```
+
 Checkpoints trained with `nyaya.train` still work with the RAG commands through `--ckpt`.
 
 ## Repository layout

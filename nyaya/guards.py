@@ -124,11 +124,13 @@ def scan_source(text: str) -> list[str]:
     return hits
 
 
-def quarantine(sources: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Split sources into (kept, withheld) by the scanner."""
+def quarantine(sources: list[dict], detector=None) -> tuple[list[dict], list[dict]]:
+    """Split sources into (kept, withheld) by the scanner and, if given, a learned detector
+    (nyaya.injection.Classifier or LLMDetector): a source either flags is withheld."""
     kept, held = [], []
-    for s in sources:
-        hits = scan_source(s["text"])
+    extra = detector.flags([s["text"] for s in sources]) if detector is not None and sources else [[]] * len(sources)
+    for s, more in zip(sources, extra):
+        hits = scan_source(s["text"]) + list(more)
         (held if hits else kept).append({**s, "flags": hits} if hits else s)
     return kept, held
 

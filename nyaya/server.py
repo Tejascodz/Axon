@@ -38,6 +38,13 @@ Protection
   * AXON_ECHO_FILTER=1 (default): withhold retrieved passages that restate the question, the usual
     shape of a planted document (round 9: false answers 17% -> 0% for that attack, exact match on
     clean questions 0.27 -> 0.26). AXON_ECHO_FILTER=0 turns it off.
+  * AXON_EXPAND=bm25|append|replace: the LLM first writes what an answer would involve, and that is
+    searched for too (nyaya.expand; for long, reasoning-heavy questions). One extra LLM call. Off by default.
+  * AXON_FOLLOW_UPS=N: up to N LLM-written follow-up searches for questions that chain facts
+    (nyaya.expand). Up to N extra LLM calls. Off (0) by default.
+  * AXON_INJECTION_DETECTOR=classifier|llm: withhold passages a learned prompt-injection detector flags,
+    as well as those the pattern scanner flags (nyaya.injection; AXON_INJECTION_MODEL,
+    AXON_INJECTION_THRESHOLD, AXON_INJECTION_DEVICE, AXON_INJECTION_REVISION). Off by default.
   * AXON_DEVICE / AXON_VERIFY_DEVICE (e.g. cuda:0, cuda:1, cpu): where the retrieval model and the
     checker run. Keep them off the LLM server's GPU: sharing one 15 GB GPU caused out-of-memory errors.
   * Request sizes are capped (AXON_MAX_DOCS, AXON_MAX_CHARS) so one request cannot exhaust memory.
@@ -186,10 +193,25 @@ def verifier():
         return _state["verifier"]
 
 
+def detector():
+    kind = os.environ.get("AXON_INJECTION_DETECTOR", "")
+    if kind not in ("classifier", "llm"):
+        return None
+    with _load_lock:
+        if "detector" not in _state:
+            from .injection import DEFAULT_MODEL, Classifier, LLMDetector
+            _state["detector"] = LLMDetector() if kind == "llm" else Classifier(
+                os.environ.get("AXON_INJECTION_MODEL", DEFAULT_MODEL), device=os.environ.get("AXON_INJECTION_DEVICE") or None,
+                threshold=float(os.environ.get("AXON_INJECTION_THRESHOLD", "0.5")),
+                revision=os.environ.get("AXON_INJECTION_REVISION") or None)
+        return _state["detector"]
+
+
 def _preload():
     try:
         model()
         verifier()
+        detector()
         if os.environ.get("AXON_INDEX"):
             pipeline()
         _state["ready"] = True
@@ -367,12 +389,15 @@ def ask(req: AskRequest, request: Request):
     with _inflight_lock:
         _inflight[0] += 1
     try:
-        v = verifier()
+        v, det = verifier(), detector()
         hops = int(os.environ.get("AXON_HOPS", "2"))
+        expand = os.environ.get("AXON_EXPAND") or None
         out = pipeline().answer(req.question, k=req.k, tenant=request.state.tenant,
                                 retrieve_kw={"hops": hops, "hop_mode": "titles", "hop_slots": 2} if hops > 1 else None,
                                 echo_filter=os.environ.get("AXON_ECHO_FILTER", "1") == "1",
-                                **({"verifier": v} if v else {}))
+                                expand=expand if expand in ("bm25", "append", "replace") else None,
+                                follow_ups=min(max(int(os.environ.get("AXON_FOLLOW_UPS", "0")), 0), 3),
+                                **({"verifier": v} if v else {}), **({"detector": det} if det else {}))
         out["request_id"] = request.state.request_id
         return out
     except HTTPException:
