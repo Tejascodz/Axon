@@ -40,3 +40,4 @@ deploy/index/
 build/
 dist/
 *.egg-info/
+!results/r6_run1/

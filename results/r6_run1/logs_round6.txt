@@ -1,0 +1,87 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Generating train split:   0%|          | 0/90447 [00:00<?, ? examples/s]Generating train split:   1%|          | 1000/90447 [00:00<00:12, 7318.04 examples/s]Generating train split:   7%|▋         | 6000/90447 [00:00<00:03, 24452.85 examples/s]Generating train split:  13%|█▎        | 12000/90447 [00:00<00:02, 32137.41 examples/s]Generating train split:  20%|█▉        | 18000/90447 [00:00<00:01, 36388.60 examples/s]Generating train split:  27%|██▋       | 24000/90447 [00:00<00:01, 40201.23 examples/s]Generating train split:  33%|███▎      | 30000/90447 [00:00<00:01, 41357.03 examples/s]Generating train split:  40%|███▉      | 36000/90447 [00:00<00:01, 42099.90 examples/s]Generating train split:  46%|████▋     | 42000/90447 [00:01<00:01, 43890.41 examples/s]Generating train split:  54%|█████▍    | 49224/90447 [00:01<00:00, 41807.88 examples/s]Generating train split:  60%|█████▉    | 54224/90447 [00:01<00:00, 41999.81 examples/s]Generating train split:  67%|██████▋   | 60224/90447 [00:01<00:00, 43766.21 examples/s]Generating train split:  73%|███████▎  | 66224/90447 [00:01<00:00, 43858.41 examples/s]Generating train split:  80%|███████▉  | 72224/90447 [00:01<00:00, 43541.85 examples/s]Generating train split:  86%|████████▋ | 78224/90447 [00:01<00:00, 45850.24 examples/s]Generating train split:  93%|█████████▎| 84224/90447 [00:02<00:00, 44613.99 examples/s]Generating train split:  99%|█████████▊| 89224/90447 [00:02<00:00, 43415.74 examples/s]Generating train split: 100%|██████████| 90447/90447 [00:02<00:00, 41359.29 examples/s]
+Generating validation split:   0%|          | 0/7405 [00:00<?, ? examples/s]Generating validation split:  54%|█████▍    | 4000/7405 [00:00<00:00, 36266.83 examples/s]Generating validation split: 100%|██████████| 7405/7405 [00:00<00:00, 45254.07 examples/s]
+18:56:32 507494 unique paragraphs available, 700 evaluation questions
+Loading weights:   0%|          | 0/134 [00:00<?, ?it/s]Loading weights: 100%|██████████| 134/134 [00:00<00:00, 2955.02it/s]
+18:57:49 encoded 32/100000
+18:58:26 encoded 6432/100000
+18:59:06 encoded 12832/100000
+18:59:45 encoded 19232/100000
+19:00:25 encoded 25632/100000
+19:01:04 encoded 32032/100000
+19:01:44 encoded 38432/100000
+19:02:24 encoded 44832/100000
+19:03:03 encoded 51232/100000
+19:03:41 encoded 57632/100000
+19:04:21 encoded 64032/100000
+19:05:00 encoded 70432/100000
+19:05:40 encoded 76832/100000
+19:06:19 encoded 83232/100000
+19:06:59 encoded 89632/100000
+19:07:38 encoded 96032/100000
+WARNING:pylate.indexes.fast_plaid:Adding documents to existing index. This uses fast-plaid's update method which does not recompute centroids and may result in slightly lower accuracy.
+20:05:57 scale 100000: {"passages": 100000, "build_seconds": 3555.53, "vector_gb": 2.52, "plaid": {"recall@100": 0.9743, "latency": {"p50_ms": 119.2, "p95_ms": 147.3, "p99_ms": 162.1, "n": 200}}, "plaid_error": null, "gpu_peak_build_gb": 5.54, "rss_peak_gb_after_build": 12.32, "load_seconds": 15.4, "exact": {"recall@100": 0.9757, "latency": {"p50_ms": 119.0, "p95_ms": 157.1, "p99_ms": 188.2, "n": 200}, "vectors_resident_on_gpu": true}, "exact_streamed": {"latency": {"p50_ms": 693.9, "p95_ms": 722.5, "p99_ms": 740.4, "n": 200}, "same_results_as_resident": true}, "pipeline_exact": {"latency": {"p50_ms": 177.8, "p95_ms": 221.4, "p99_ms": 271.6, "n": 200}}, "pipeline_plaid": {"latency": {"p50_ms": 179.2, "p95_ms": 214.6, "p99_ms": 235.2, "n": 200}}, "rss_peak_gb": 12.32}
+20:07:45 encoded 32/750
+WARNING:pylate.indexes.fast_plaid:Adding documents to existing index. This uses fast-plaid's update method which does not recompute centroids and may result in slightly lower accuracy.
+WARNING:pylate.indexes.fast_plaid:Adding documents to existing index. This uses fast-plaid's update method which does not recompute centroids and may result in slightly lower accuracy.
+21:03:19 update: {"files_changed": 500, "files_deleted": 250, "files_added": 250, "update": {"added": 250, "changed": 500, "removed": 250, "unchanged": 99250, "chunks_added": 750, "chunks_deleted": 750, "live_chunks": 100000, "dead_chunks": 750, "version": 2, "seconds": 36.98}, "full_build_seconds": 3555.53, "update_speedup": 96.1, "compact": {"chunks_before": 100750, "chunks_after": 100000, "version": 3, "seconds": 2942.65}, "checks": {"changed_found_top5": 0.94, "deleted_returned": 0, "added_found_top5": 0.96, "recall@100_before": 0.9757, "recall@100_after": 0.9757, "plaid_recall@100_after": 0.9743, "recall@100_after_compact": 0.9757}}
+21:03:22 encoded 32/150000
+21:04:01 encoded 6432/150000
+21:04:41 encoded 12832/150000
+21:05:21 encoded 19232/150000
+21:06:00 encoded 25632/150000
+21:06:40 encoded 32032/150000
+21:07:20 encoded 38432/150000
+21:08:00 encoded 44832/150000
+21:08:40 encoded 51232/150000
+21:09:19 encoded 57632/150000
+21:09:59 encoded 64032/150000
+21:10:38 encoded 70432/150000
+21:11:18 encoded 76832/150000
+21:11:57 encoded 83232/150000
+21:12:37 encoded 89632/150000
+21:13:16 encoded 96032/150000
+21:13:55 encoded 102432/150000
+21:14:35 encoded 108832/150000
+21:15:14 encoded 115232/150000
+21:15:53 encoded 121632/150000
+21:16:32 encoded 128032/150000
+21:17:11 encoded 134432/150000
+21:17:51 encoded 140832/150000
+21:18:30 encoded 147232/150000
+WARNING:pylate.indexes.fast_plaid:Adding documents to existing index. This uses fast-plaid's update method which does not recompute centroids and may result in slightly lower accuracy.
+WARNING:pylate.indexes.fast_plaid:Adding documents to existing index. This uses fast-plaid's update method which does not recompute centroids and may result in slightly lower accuracy.
+22:22:07 scale 150000: {"passages": 150000, "build_seconds": 3973.87, "vector_gb": 3.75, "plaid": {"recall@100": 0.9707, "latency": {"p50_ms": 145.7, "p95_ms": 187.2, "p99_ms": 205.9, "n": 200}}, "plaid_error": null, "gpu_peak_build_gb": 7.23, "rss_peak_gb_after_build": 17.75, "load_seconds": 21.5, "exact": {"recall@100": 0.9714, "latency": {"p50_ms": 167.5, "p95_ms": 224.4, "p99_ms": 267.9, "n": 200}, "vectors_resident_on_gpu": true}, "exact_streamed": {"latency": {"p50_ms": 1019.7, "p95_ms": 1060.8, "p99_ms": 1101.4, "n": 200}, "same_results_as_resident": true}, "pipeline_exact": {"latency": {"p50_ms": 235.5, "p95_ms": 294.1, "p99_ms": 338.1, "n": 200}}, "pipeline_plaid": {"latency": {"p50_ms": 214.6, "p95_ms": 263.2, "p99_ms": 283.2, "n": 200}}, "rss_peak_gb": 17.75}
+
+# Round 6: the index at scale
+
+Hardware: Tesla T4, 580.178.04, 15360 MiB, Tesla T4, 580.178.04, 15360 MiB; host memory 31.3 GB.
+
+## Stored vectors vs fresh encoding (re-ranking)
+
+100 questions x 20 candidates: max score difference 0.00e+00, same order 100%, same evidence 100.0%.
+
+## Scale
+
+| passages | build | load | vectors | exact recall@100 | exact p50 / p95 (GPU) | exact p50 (streamed) | PLAID recall@100 | PLAID p50 / p95 | pipeline p50 / p95 (exact) | pipeline p50 / p95 (PLAID) | peak RAM |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 100,000 | 59.3 min | 15.4 s | 2.52 GB | 0.9757 | 119.0 / 157.1 ms | 693.9 ms | 0.9743 | 119.2 / 147.3 ms | 177.8 / 221.4 ms | 179.2 / 214.6 ms | 12.32 GB |
+| 150,000 | 66.2 min | 21.5 s | 3.75 GB | 0.9714 | 167.5 / 224.4 ms | 1019.7 ms | 0.9707 | 145.7 / 187.2 ms | 235.5 / 294.1 ms | 214.6 / 263.2 ms | 17.75 GB |
+
+Large size reduced from 300,000 to 151,876: the 100,000 build took 59 min.
+
+## Incremental update (1% of the 100k index)
+
+500 changed, 250 deleted, 250 added: update 36.98 s against a full build of 3556 s (96.1x). Compaction 2942.65 s.
+
+* changed text found in the top 5: 94%
+* deleted files returned in the top 20 of 100 queries for their own text: 0
+* added files found in the top 5: 96%
+* recall@100 before / after update / after compaction: 0.9757 / 0.9757 / 0.9757; PLAID after update 0.9743
+
+## Dependency overrides (deploy/overrides.txt) vs PyLate's pins
+
+encoding failed in the pinned environment (logs/r6_deps_env.log)
+
+Not run in this round: the 30-minute load test through the server with SGLang (left out to save GPU quota).
+

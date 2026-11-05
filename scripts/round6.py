@@ -52,7 +52,11 @@ def save(part, value):
 
 
 def done(part):
-    return os.path.exists(OUT) and part in json.load(open(OUT))
+    """Finished, and without an error (a failed part runs again)."""
+    if not os.path.exists(OUT):
+        return False
+    v = json.load(open(OUT)).get(part)
+    return v is not None and not (isinstance(v, dict) and "error" in v)
 
 
 def rss_peak_gb():
@@ -67,7 +71,7 @@ def ms(xs):
             "p99_ms": round(1000 * xs[int(0.99 * (len(xs) - 1))], 1), "n": len(xs)}
 
 
-def make_axon(smoke):
+def make_axon(smoke, record=True):
     if smoke:
         sys.path.insert(0, os.path.join(ROOT, "tests"))
         from test_system import _FakeAxon
@@ -79,7 +83,8 @@ def make_axon(smoke):
         return Axon(RETRIEVER, revision=REVISION)
     except Exception as e:                                  # pinned snapshot unavailable: record it, carry on
         log(f"revision {REVISION} failed ({type(e).__name__}); using the latest snapshot")
-        save("revision_fallback", repr(e)[:300])
+        if record:                                          # only the main run writes results/r6.json
+            save("revision_fallback", repr(e)[:300])
         return Axon(RETRIEVER)
 
 
@@ -301,7 +306,7 @@ def encode_sample(path, n_docs, n_q, data, smoke):
     import torch
     a = argparse.Namespace(smoke=smoke, data=data, sizes=[n_docs])
     paras, evals = corpus(a)
-    ax = make_axon(smoke)
+    ax = make_axon(smoke, record=False)
     store = ax.encode_store([text(*p) for p in paras[:n_docs]])
     qs = [torch.as_tensor(ax.query_vectors(q)).half().cpu() for q, _ in evals[:n_q]]
     import importlib.metadata as md
@@ -337,11 +342,16 @@ def part_deps(a):
         run([sys.executable, "-m", "uv", "pip", "install", "--python", py, "--override",
              os.path.join(ROOT, "deploy", "overrides.txt"), ROOT, "pypdf>=5", "datasets"])
     files = {}
+    child_env = dict(os.environ)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        if torch.cuda.device_count() > 1:          # the other GPU: this process may still hold memory on GPU 0
+            child_env["CUDA_VISIBLE_DEVICES"] = "1"
     for name, python in (("pinned", sys.executable), ("overridden", py)):
         files[name] = os.path.join(a.work, f"deps_{name}.pt")
         cmd = [python, os.path.abspath(__file__), "--encode_sample", files[name], "--n_docs", str(n_docs),
                "--n_q", str(n_q), "--data", a.data] + (["--smoke"] if a.smoke else [])
-        if subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=ROOT).returncode != 0:
+        if subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=ROOT, env=child_env).returncode != 0:
             return {"error": f"encoding failed in the {name} environment (logs/r6_deps_env.log)"}
     A, B = (torch.load(files[k], weights_only=True) for k in ("pinned", "overridden"))
     res = {"versions": {"pinned": A["versions"], "overridden": B["versions"]}, "passages": n_docs, "questions": n_q,
@@ -476,9 +486,10 @@ def main():
         budget = a.max_build_minutes * 60
         fit = int(small * budget / max(b100, 1))
         if fit < large and not a.smoke:
-            save("size_note", f"Large size reduced from {large:,} to {fit:,}: the {small:,} build took {b100 / 60:.0f} min "
+            new = max(small, fit // 10_000 * 10_000)
+            save("size_note", f"Large size reduced from {large:,} to {new:,}: the {small:,} build took {b100 / 60:.0f} min "
                               f"(limit {a.max_build_minutes:g} min).")
-            large = max(small, fit // 10_000 * 10_000)
+            large = new
         large = min(large, len(paras) - 400)
         if large > small and not done(f"scale_{large}"):
             res, rag, out_dir = part_scale(a, ax, paras, evals, large, files=False)
