@@ -336,6 +336,30 @@ docker compose -f deploy/docker-compose.yml --profile sglang up -d --build
   - an end-to-end job that builds the image, indexes documents with the real model inside it, starts the stack with a stand-in LLM, and checks auth, `/rerank`, `/ask`, quarantine of an injected document, logs, Prometheus scraping and the Grafana dashboard.
 - **Operations**: `deploy/RUNBOOK.md` covers deployment, key rotation, index changes, upgrades and rollback, and one section per alert.
 
+### Using it day to day
+
+Axon answers questions from a folder of your own documents (`.md`, `.txt`, `.pdf`) and shows the passages each answer comes from. When the documents do not support an answer it says so instead of guessing.
+
+- **People** open the server's address in a browser (`/`), paste the key they were given, and ask. The page is static: the key stays in that browser tab, answers and sources are shown as plain text, and a strict Content-Security-Policy blocks inline and third-party scripts.
+- **Programs** call `POST /ask` with the key as a Bearer token:
+  ```bash
+  curl -s https://axon.example.com/ask -H "Authorization: Bearer $KEY" \
+       -H 'Content-Type: application/json' -d '{"question": "What is our refund window?"}'
+  ```
+- **One person on one machine with a GPU** can skip Docker:
+  ```bash
+  python -m nyaya.rag build --src ~/notes --out ~/notes-index
+  python -m nyaya.rag ask --index ~/notes-index "When is the next audit due?"   # needs NYAYA_LLM_BASE_URL
+  ```
+- **Keeping it current**: add, edit or delete files, then run `python -m nyaya.rag update`; a running server picks up the new version without a restart.
+- **Separate teams** each get their own key and only ever see their own folder (`build --tenants`).
+
+What it is good at, as measured: finding the right passages, including in large collections and for questions that chain two facts, and refusing to answer from planted or injected text. What to expect from it:
+- With the 4B generator measured here, it declines about 40% of HotpotQA questions, all of which have an answer in the collection, and most questions that chain three or more facts. A larger generator (8B or more, on an L4, A10 or better) should answer more, but that has not been measured here.
+- It answers one question at a time: no conversation memory, and no summarising or rewriting of whole documents.
+- Scanned PDFs need OCR first, and Word or HTML files need converting to text.
+- It needs a GPU for the generator: about 16 GB for the 4B model in fp16.
+
 ## How it works
 
 1. **Split the query into conditions** (`nyaya/model.py`, `split_clauses`). Numbered lists ("Find a book that: 1. …, 2. …") give one clause per item, with the lead-in dropped. Semicolons, new lines, "and also" and "plus" also separate clauses. For descriptive prose, sentence splitting can be switched on. An LLM query planner can replace this rule-based splitter.

@@ -77,7 +77,7 @@ jobs:
           cp deploy/.env.example deploy/.env
           deploy/make-secrets.sh
           $COMPOSE config -q
-          $COMPOSE config --format json | python3 -c "import json,sys; e=json.load(sys.stdin)['services']['axon']['environment']; print(e); assert e['AXON_MODEL_REVISION'] == '62911e105059585d244384c7d17826e35f669c17'"
+          $COMPOSE config --format json | python3 -c "import json,sys; c=json.load(sys.stdin)['services']; e=c['axon']['environment']; print(e); assert e['AXON_MODEL_REVISION'] == '62911e105059585d244384c7d17826e35f669c17'; bad=[(n,k) for n,v in c.items() for k,x in (v.get('environment') or {}).items() if str(x).lstrip().startswith('#')]; assert not bad, bad"
       - name: The LLM images named in .env.example exist
         run: |
           set -a; . deploy/.env; set +a

@@ -910,3 +910,27 @@ def test_learned_injection_detector_joins_the_scanner(monkeypatch):
         raise ConnectionError
     monkeypatch.setattr(llm, "chat", down)
     assert injection.LLMDetector().flags(["a"]) == [[]]
+
+
+def test_web_page_is_static_strict_and_keyless(monkeypatch):
+    """GET / serves the question page without a key (it holds no data); /ask still needs one."""
+    from fastapi.testclient import TestClient
+
+    from nyaya import server, webui
+    monkeypatch.setenv("AXON_API_KEY", "s3cret-key-for-the-ui-test")
+    monkeypatch.setenv("AXON_REQUIRE_AUTH", "1")
+    server._hits.clear()
+    cl = TestClient(server.app)
+    page = cl.get("/")
+    assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
+    csp = page.headers["content-security-policy"]
+    assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp and "unsafe" not in csp
+    assert page.headers["x-frame-options"] == "DENY" and page.headers["x-content-type-options"] == "nosniff"
+    assert "<script>" not in page.text and 'src="/ui.js"' in page.text           # no inline script
+    js = cl.get("/ui.js")
+    assert js.status_code == 200 and js.headers["content-type"].startswith("text/javascript")
+    assert "innerHTML" not in webui.JS and "eval(" not in webui.JS and "localStorage" not in webui.JS
+    assert cl.get("/ui.css").headers["content-type"].startswith("text/css")
+    assert cl.post("/ask", json={"question": "q"}).status_code == 401
+    monkeypatch.setenv("AXON_UI", "0")
+    assert cl.get("/").status_code == 404 and cl.get("/ui.js").status_code == 404

@@ -62,6 +62,10 @@ def main():
           "the metrics key cannot call /rerank")
     check(call(f"{AXON}/metrics", headers=client)[0] == 401, "a client key cannot read /metrics")
 
+    st, hd, raw = call(f"{AXON}/")
+    check(st == 200 and "frame-ancestors 'none'" in hd.get("content-security-policy", "") and b"/ui.js" in raw,
+          "the question page is served without a key, with a strict CSP")
+
     # re-ranking with the real model
     docs = ["Hiking boots with a steel shank.", "A waterproof trail jacket with an adjustable hood.",
             "Returns are accepted within 30 days."]
@@ -94,6 +98,7 @@ def main():
     check(st == 200 and 'rag_events_total{event="answered"}' in page and "axon_ready 1.0" in page,
           "the metrics key reads /metrics with RAG events")
     check('rag_events_total{event="source_withheld"}' in page, "quarantined sources are counted")
+    check("axon_injection_detector_loaded 1.0" in page, "the injection classifier set in .env.example is loaded")
 
     # Prometheus
     def targets_up():

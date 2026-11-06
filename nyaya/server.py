@@ -10,6 +10,8 @@
   GET  /health   liveness: the process is up
   GET  /ready    readiness: model (and index, if configured) loaded; 503 until then
   GET  /metrics  Prometheus
+  GET  /         a web page for asking questions (nyaya.webui); the user pastes their key into it.
+                 Static and holds no data, so it needs no key itself. AXON_UI=0 turns it off.
 
 Protection
   * AXON_API_KEY: when set, every request except /health and /ready must send
@@ -75,7 +77,7 @@ from collections import defaultdict, deque
 from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from .axon import METHODS, Axon
@@ -86,8 +88,10 @@ MAX_DOCS = int(os.environ.get("AXON_MAX_DOCS", "500"))
 MAX_CHARS = int(os.environ.get("AXON_MAX_CHARS", "20000"))
 RATE = int(os.environ.get("AXON_RATE_PER_MIN", "120"))
 MAX_INFLIGHT = int(os.environ.get("AXON_MAX_INFLIGHT", "16"))
-ROUTES = {"/health", "/ready", "/metrics", "/rerank", "/ask", "/docs", "/openapi.json"}
-OPEN = {"/health", "/ready"}                         # probes: no key needed, nothing sensitive returned
+UI = {"/": "HTML", "/ui.js": "JS", "/ui.css": "CSS"}
+UI_TYPES = {"HTML": "text/html; charset=utf-8", "JS": "text/javascript; charset=utf-8", "CSS": "text/css; charset=utf-8"}
+ROUTES = {"/health", "/ready", "/metrics", "/rerank", "/ask", "/docs", "/openapi.json", *UI}
+OPEN = {"/health", "/ready", *UI}                    # probes and the static page: no key needed, no data returned
 
 REQS = REGISTRY.counter("axon_requests_total", "HTTP requests", ["path", "status"])
 LAT = REGISTRY.histogram("axon_request_seconds", "HTTP request latency", ["path"])
@@ -113,6 +117,8 @@ def _index_value(fn):
 
 REGISTRY.gauge("axon_ready", "1 once the model (and index, if configured) is loaded",
                fn=lambda: 1.0 if _state.get("ready") else 0.0)
+REGISTRY.gauge("axon_injection_detector_loaded", "1 once the configured learned injection detector is loaded",
+               fn=lambda: float("detector" in _state))
 REGISTRY.gauge("axon_ask_inflight", "/ask requests being served now", fn=lambda: _inflight[0])
 REGISTRY.gauge("axon_ask_capacity", "AXON_MAX_INFLIGHT", fn=lambda: MAX_INFLIGHT)
 REGISTRY.gauge("axon_index_version", "Version of the index snapshot being served",
@@ -323,6 +329,13 @@ async def guard(request: Request, call_next):
         resp = await call_next(request)
         status = resp.status_code
         resp.headers["X-Request-ID"] = rid
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Cache-Control"] = "no-store"
+        if raw in UI:
+            from .webui import CSP
+            resp.headers["Content-Security-Policy"] = CSP
+            resp.headers["X-Frame-Options"] = "DENY"
         REQS.inc(path=path, status=str(status))
         return resp
     finally:
@@ -380,6 +393,19 @@ def rerank(req: RerankRequest):
     results = model().rerank(req.query, req.documents, top_k=req.top_k, conditions=req.conditions,
                              explain=req.explain, method=req.method)
     return {"results": [asdict(r) for r in results]}
+
+
+def _ui(name):
+    def page():
+        if os.environ.get("AXON_UI", "1") != "1":
+            raise HTTPException(404, "Not Found")
+        from . import webui
+        return Response(getattr(webui, name), media_type=UI_TYPES[name])
+    return page
+
+
+for _path, _name in UI.items():
+    app.add_api_route(_path, _ui(_name), methods=["GET"], include_in_schema=False)
 
 
 @app.post("/ask")
