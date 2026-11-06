@@ -88,7 +88,7 @@ def file_chunks(path: str, rel: str, tenant: str | None) -> list[dict]:
 @contextlib.contextmanager
 def locked(out: str):
     os.makedirs(out, exist_ok=True)
-    with open(os.path.join(out, ".lock"), "w") as f:
+    with open(os.path.join(out, ".lock"), "w", encoding="utf-8") as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -99,18 +99,29 @@ def locked(out: str):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def _fsync_dir(path):
+    """Make a rename durable: the directory entry itself must reach the disk."""
+    with contextlib.suppress(OSError):
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
 def _atomic_json(path, obj):
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    _fsync_dir(os.path.dirname(path) or ".")
 
 
 def _atomic_lines(path, rows):
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")
         f.flush()
@@ -119,7 +130,7 @@ def _atomic_lines(path, rows):
 
 
 def read_config(out: str) -> dict:
-    with open(os.path.join(out, "config.json")) as f:
+    with open(os.path.join(out, "config.json"), encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -135,8 +146,20 @@ def check_model(cfg: dict, axon):
 # --------------------------------------------------------------------------- reading
 
 def _read_lines(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f]
+
+
+def _read_json(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _inside(out: str, name: str) -> str:
+    """A file named by config.json, which must be a plain file name inside the index folder."""
+    if not isinstance(name, str) or not name or os.path.basename(name) != name or name in (".", ".."):
+        raise ValueError(f"index in {out} names an invalid file: {name!r}")
+    return os.path.join(out, name)
 
 
 def load(out: str, cfg: dict | None = None):
@@ -146,19 +169,22 @@ def load(out: str, cfg: dict | None = None):
     if files is None:                                                 # format 2
         chunks = _read_lines(os.path.join(out, _LEGACY["chunks"]))
         mp = os.path.join(out, _LEGACY["manifest"])
-        manifest = json.load(open(mp)) if os.path.exists(mp) else {}
+        manifest = _read_json(mp) if os.path.exists(mp) else {}
         store = VectorStore.load(os.path.join(out, _LEGACY["vectors"]))
     else:
-        chunks = _read_lines(os.path.join(out, files["chunks"]))
-        manifest = json.load(open(os.path.join(out, files["manifest"])))
-        store = VectorStore.open(os.path.join(out, files["data"]), os.path.join(out, files["meta"]))
+        chunks = _read_lines(_inside(out, files["chunks"]))
+        manifest = _read_json(_inside(out, files["manifest"]))
+        store = VectorStore.open(_inside(out, files["data"]), _inside(out, files["meta"]))
     if len(store) != len(chunks):
         raise ValueError(f"index in {out} is inconsistent: {len(chunks)} chunks, {len(store)} vector sets")
     return cfg, chunks, store, manifest
 
 
 def plaid_dir(cfg: dict) -> str:
-    return cfg.get("plaid_dir") or "plaid"                            # format 2 used one fixed name
+    name = cfg.get("plaid_dir") or "plaid"                            # format 2 used one fixed name
+    if os.path.basename(name) != name or name in (".", ".."):
+        raise ValueError(f"invalid PLAID folder name in config.json: {name!r}")
+    return name
 
 
 def plaid_current(out: str, cfg: dict) -> bool:
@@ -169,7 +195,7 @@ def plaid_current(out: str, cfg: dict) -> bool:
     if cfg.get("files") is None:                                      # format 2 kept no marker
         return os.path.isdir(os.path.join(out, name))
     try:
-        with open(os.path.join(out, f"{name}.version")) as f:
+        with open(_inside(out, f"{name}.version"), encoding="utf-8") as f:
             return int(f.read().strip()) == cfg["version"]
     except (OSError, ValueError):
         return False
@@ -236,7 +262,7 @@ def _plaid_add(pl, chunks, store, positions, shuffle=False, log=None):
 
 def _mark_plaid(out, name, version):
     tmp = os.path.join(out, f"{name}.version.tmp")
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(str(version))
     os.replace(tmp, os.path.join(out, f"{name}.version"))
 

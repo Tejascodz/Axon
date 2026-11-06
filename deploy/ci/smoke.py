@@ -48,9 +48,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--secrets", required=True)
     a = ap.parse_args()
-    key = open(f"{a.secrets}/axon_api_key").read().strip()
-    mkey = open(f"{a.secrets}/axon_metrics_key").read().strip()
-    gpw = open(f"{a.secrets}/grafana_admin_password").read().strip()
+    def secret(name):
+        with open(f"{a.secrets}/{name}", encoding="utf-8") as f:
+            return f.read().strip()
+    key, mkey, gpw = secret("axon_api_key"), secret("axon_metrics_key"), secret("grafana_admin_password")
     client, scraper = {"Authorization": f"Bearer {key}"}, {"Authorization": f"Bearer {mkey}"}
 
     wait("Axon ready (model and index loaded)", lambda: call(f"{AXON}/ready")[0] == 200, 1200)

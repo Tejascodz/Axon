@@ -47,7 +47,9 @@ def _from_json(split, cache):
         os.makedirs(cache, exist_ok=True)
         urllib.request.urlretrieve(HOTPOT_URLS[split], path + ".tmp")  # fixed CMU dataset URLs (fallback when the HF copy fails); JSON data, never code  # nosec B310
         os.replace(path + ".tmp", path)
-    for r in json.load(open(path)):
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    for r in data:
         paras = [(t, " ".join(s).strip()) for t, s in r["context"]]
         sents = {t: s for t, s in r["context"]}
         yield r["_id"], r["question"], r["answer"], r.get("type", ""), paras, sents, [tuple(x) for x in r["supporting_facts"]]

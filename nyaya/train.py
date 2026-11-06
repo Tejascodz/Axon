@@ -102,7 +102,8 @@ class TripleStream:
     """General retrieval triples from jsonl lines: {"query": ..., "pos": ..., "negs": [...]}."""
 
     def __init__(self, path, hard=2, seed=0):
-        self.rows = [json.loads(l) for l in open(path)]
+        with open(path, encoding="utf-8") as f:
+            self.rows = [json.loads(line) for line in f]
         self.hard = hard
         self.rng = random.Random(seed)
 

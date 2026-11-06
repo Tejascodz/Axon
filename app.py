@@ -33,7 +33,8 @@ def _bar(x):
 
 
 def run(query, docs_text):
-    docs = [d.strip() for d in docs_text.split("\n\n") if d.strip()][:50]
+    query = (query or "")[:2000]                                  # same limits as the HTTP service
+    docs = [d.strip()[:20000] for d in (docs_text or "")[:1_000_000].split("\n\n") if d.strip()][:50]
     if not query.strip() or not docs:
         return "Enter a query and at least one document.", ""
     index = axon.index(docs)

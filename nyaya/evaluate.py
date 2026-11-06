@@ -106,17 +106,22 @@ def load_beir(folder: str):
     """Load a BEIR-format dataset (corpus.jsonl, queries.jsonl, qrels/test.tsv or qrels.tsv)."""
     import os
     from types import SimpleNamespace as NS
+    def jsonl(path):
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
     docs = [NS(doc_id=j["_id"], text=(j.get("title", "") + " " + j["text"]).strip())
-            for j in map(json.loads, open(f"{folder}/corpus.jsonl"))]
-    qtext = {j["_id"]: j["text"] for j in map(json.loads, open(f"{folder}/queries.jsonl"))}
+            for j in jsonl(f"{folder}/corpus.jsonl")]
+    qtext = {j["_id"]: j["text"] for j in jsonl(f"{folder}/queries.jsonl")}
     gold = defaultdict(set)
     if os.path.exists(f"{folder}/qrels.jsonl"):                    # LIMIT release format
-        for j in map(json.loads, open(f"{folder}/qrels.jsonl")):
+        for j in jsonl(f"{folder}/qrels.jsonl"):
             if float(j.get("score", 1)) > 0:
                 gold[j["query-id"]].add(j["corpus-id"])
     else:
         qrel_path = next(p for p in (f"{folder}/qrels/test.tsv", f"{folder}/qrels.tsv") if os.path.exists(p))
-        for line in open(qrel_path).read().splitlines()[1:]:
+        with open(qrel_path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        for line in lines[1:]:
             qid, did, s = line.split("\t")[:3]
             if float(s) > 0:
                 gold[qid].add(did)

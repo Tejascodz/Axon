@@ -59,6 +59,16 @@ class _Writer:
         os.fsync(self.f.fileno())
         self.f.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, *exc):
+        if exc_type is None:
+            self.close()
+        else:                                              # a failed encode: release the file, keep nothing
+            self.f.close()
+        return False
+
     def ptr(self, base: torch.Tensor | None = None) -> torch.Tensor:
         own = torch.zeros(len(self.lens) + 1, dtype=torch.long)
         own[1:] = torch.cumsum(torch.tensor(self.lens, dtype=torch.long), 0) if self.lens else 0
@@ -86,12 +96,11 @@ class VectorStore:
         if path is not None:
             first = next(docs, None)
             dim = dim or (first.shape[1] if first is not None else 128)
-            w = _Writer(path, dim)
-            for x in ([first] if first is not None else []):
-                w.add(x)
-            for x in docs:
-                w.add(x)
-            w.close()
+            with _Writer(path, dim) as w:
+                for x in ([first] if first is not None else []):
+                    w.add(x)
+                for x in docs:
+                    w.add(x)
             ptr = w.ptr()
             return cls(_mmap(path, int(ptr[-1]), dim), ptr, path=path)
         docs = list(docs)
@@ -124,10 +133,9 @@ class VectorStore:
         if self.path is None:
             raise ValueError("this store is not on disk: write_data() it first")
         start = len(self)
-        w = _Writer(self.path, self.dim, mode="r+b", start_tokens=self.n_tokens)
-        for i in range(len(other)):
-            w.add(other.doc(i))
-        w.close()
+        with _Writer(self.path, self.dim, mode="r+b", start_tokens=self.n_tokens) as w:
+            for i in range(len(other)):
+                w.add(other.doc(i))
         self.ptr = w.ptr(self.ptr)
         self.live = torch.cat([self.live, other.live])
         self.flat, self._resident = _mmap(self.path, self.n_tokens, self.dim), None
@@ -231,16 +239,18 @@ class VectorStore:
     def write_data(self, data_path: str):
         """Write the vectors to a new data file and memory-map the store from it."""
         tmp = data_path + ".tmp"
-        w = _Writer(tmp, self.dim)
-        for i in range(len(self)):
-            w.add(self.doc(i))
-        w.close()
+        with _Writer(tmp, self.dim) as w:
+            for i in range(len(self)):
+                w.add(self.doc(i))
         os.replace(tmp, data_path)
         self.flat, self.path, self._resident = _mmap(data_path, self.n_tokens, self.dim), data_path, None
 
     def write_meta(self, meta_path: str):
         tmp = meta_path + ".tmp"
-        torch.save({"format": FORMAT, "dim": self.dim, "ptr": self.ptr, "live": self.live}, tmp)
+        with open(tmp, "wb") as f:
+            torch.save({"format": FORMAT, "dim": self.dim, "ptr": self.ptr, "live": self.live}, f)
+            f.flush()
+            os.fsync(f.fileno())                   # durable before it is renamed into place
         os.replace(tmp, meta_path)
 
     @classmethod
@@ -250,6 +260,8 @@ class VectorStore:
         need = n_tokens * m["dim"] * 2
         if os.path.getsize(data_path) < need:
             raise ValueError(f"{data_path} is shorter than its metadata says ({os.path.getsize(data_path)} < {need} bytes)")
+        if len(m["ptr"]) < 1 or bool((m["ptr"][1:] < m["ptr"][:-1]).any()):
+            raise ValueError(f"{meta_path}: document boundaries are not in order")
         return cls(_mmap(data_path, n_tokens, m["dim"]), m["ptr"], m["live"], path=data_path)
 
     # format 2 (one torch file) and the older padded format, kept for reading older indexes

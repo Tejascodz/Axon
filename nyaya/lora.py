@@ -195,7 +195,8 @@ def train(model, tok, examples, out_dir=None, lr=1e-4, epochs=1, accum=8, r=16, 
         from safetensors.torch import save_file
         os.makedirs(out_dir, exist_ok=True)
         save_file(adapter_state(model), os.path.join(out_dir, "adapter.safetensors"))
-        json.dump(report, open(os.path.join(out_dir, "train_report.json"), "w"), indent=1)
+        with open(os.path.join(out_dir, "train_report.json"), "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=1)
     return report
 
 
@@ -229,7 +230,8 @@ def main():
         return
     if not a.data:
         ap.error("--data is required unless --apply_adapter is given")
-    examples = [json.loads(line) for line in open(a.data)]
+    with open(a.data, encoding="utf-8") as f:
+        examples = [json.loads(line) for line in f]
     rep = train(model, tok, examples, out_dir=a.adapter_out or a.out, lr=a.lr, epochs=a.epochs, accum=a.accum,
                 r=a.r, alpha=2.0 * a.r, max_len=a.max_len, max_minutes=a.max_minutes,
                 log=lambda m: print(m, flush=True))

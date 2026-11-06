@@ -195,14 +195,14 @@ def save_beir(docs: list[Doc], queries: list[Query], out_dir: str) -> None:
     """Write corpus.jsonl / queries.jsonl / qrels.tsv (BEIR-style) for reuse."""
     import os
     os.makedirs(out_dir, exist_ok=True)
-    with open(f"{out_dir}/corpus.jsonl", "w") as f:
+    with open(f"{out_dir}/corpus.jsonl", "w", encoding="utf-8") as f:
         for d in docs:
             f.write(json.dumps({"_id": d.doc_id, "text": d.text, "values": d.values}) + "\n")
-    with open(f"{out_dir}/queries.jsonl", "w") as f:
+    with open(f"{out_dir}/queries.jsonl", "w", encoding="utf-8") as f:
         for q in queries:
             f.write(json.dumps({"_id": q.query_id, "text": q.text, "width": len(q.clauses),
                                 "clauses": q.clauses, "hard_negatives": q.hard_negatives[:50]}) + "\n")
-    with open(f"{out_dir}/qrels.tsv", "w") as f:
+    with open(f"{out_dir}/qrels.tsv", "w", encoding="utf-8") as f:
         f.write("query-id\tcorpus-id\tscore\n")
         for q in queries:
             for p in q.positives:

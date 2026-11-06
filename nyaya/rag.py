@@ -89,7 +89,8 @@ def read_file(path: str, max_pages: int = MAX_PDF_PAGES) -> str:
         if len(pages) > max_pages:
             raise ValueError(f"more than {max_pages} pages")
         return "\n\n".join((p.extract_text() or "") for p in pages)
-    return open(path, encoding="utf-8", errors="ignore").read()
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        return f.read()
 
 
 def chunk(text: str, max_words: int = 220, overlap: int = 40) -> list[str]:
@@ -125,7 +126,7 @@ def build(src: str, ckpt: str, out: str):
     D, M = encode_corpus(model, [c["text"] for c in chunks], max_len=256)
     os.makedirs(out, exist_ok=True)
     torch.save({"D": D, "M": M}, f"{out}/vectors.pt")
-    with open(f"{out}/chunks.jsonl", "w") as f:
+    with open(f"{out}/chunks.jsonl", "w", encoding="utf-8") as f:
         for c in chunks:
             f.write(json.dumps(c) + "\n")
     print(f"indexed {len(chunks)} chunks from {src}")
@@ -136,7 +137,8 @@ def build(src: str, ckpt: str, out: str):
 
 class HybridSearch:
     def __init__(self, index_dir: str, model: NyayaRetriever):
-        self.chunks = [json.loads(l) for l in open(f"{index_dir}/chunks.jsonl")]
+        with open(f"{index_dir}/chunks.jsonl", encoding="utf-8") as f:
+            self.chunks = [json.loads(line) for line in f]
         v = torch.load(f"{index_dir}/vectors.pt", map_location="cpu", weights_only=True)
         self.D, self.M = v["D"], v["M"]
         self.bm25 = BM25([c["text"] for c in self.chunks])          # rebuilt from text: no pickled objects on disk
@@ -234,7 +236,8 @@ class AxonRAG:
         AXON_BM25). bm25_weight: BM25's weight in the fusion with ColBERT (0 = ColBERT only)."""
         from .axon import Axon
         self.dir, self.bm25_analyzer, self.bm25_weight = index_dir, bm25_analyzer, bm25_weight
-        cfg = json.load(open(f"{index_dir}/config.json"))
+        from .index import read_config
+        cfg = read_config(index_dir)
         self.ax = axon or Axon(cfg["model"], device=device, revision=cfg.get("model_revision"))
         self._reload_lock = threading.Lock()
         self._reloader = None
@@ -444,7 +447,9 @@ class AxonRAG:
             if len(extra) + slots >= k:
                 break
             now = first[:k - len(extra)] + extra
-            fq = follow_up(q, [h["text"] for h in now], **(llm_kw or {}))
+            # passages the injection scanner flags never reach the LLM, here as in answers
+            shown = [h["text"] for h in now if not guards.scan_source(h["text"])]
+            fq = follow_up(q, shown, **(llm_kw or {}))
             if not fq:
                 break
             asked.append(fq)
@@ -481,6 +486,7 @@ class AxonRAG:
         if dedupe:
             from .defend import drop_near_duplicates
             s = self._s
+            hits = [h for h in hits if h["id"] in s.pos]           # the index may have been reloaded since
             kept, dropped = drop_near_duplicates([s.pos[h["id"]] for h in hits], s.store, dedupe)
             RAG_EVENTS.inc(len(dropped), event="near_duplicate_dropped")
             keep = {s.chunks[p]["id"] for p in kept[:k]}

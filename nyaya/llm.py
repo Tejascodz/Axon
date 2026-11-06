@@ -11,6 +11,12 @@ Environment
                        circuit breaker: after this many consecutive failed requests (default 5), calls
                        fail at once with CircuitOpen for this many seconds (default 30) instead of
                        piling up on a server that is down; then one trial request decides
+  NYAYA_LLM_MAX_RESPONSE_MB
+                       largest reply read from the endpoint (default 8): a broken or hostile endpoint
+                       cannot exhaust memory
+
+Redirects are never followed: an endpoint that answers 3xx is an error, so the API key is never sent
+to a host other than the one configured.
 
 Timing returned by `timed_chat` (all in seconds, measured on the client):
   ttft      time to first token: request sent -> first non-empty content chunk
@@ -43,24 +49,39 @@ class CircuitOpen(RuntimeError):
 
 
 class _Breaker:
+    """closed: calls go through. open (after N consecutive failures): calls fail at once until the
+    cool-down ends. half-open: exactly one trial call goes through; its outcome closes or re-opens."""
+
     def __init__(self):
-        self.lock, self.fails, self.open_until = threading.Lock(), 0, 0.0
+        self.lock, self.fails, self.open_until, self.trial = threading.Lock(), 0, 0.0, False
+
+    def _tripped(self):
+        return self.fails >= int(os.environ.get("NYAYA_LLM_BREAKER_FAILURES", "5"))
 
     def check(self):
         with self.lock:
-            if time.monotonic() < self.open_until:
+            now = time.monotonic()
+            if now < self.open_until or (self._tripped() and self.trial):
                 BREAKER_REJECTED.inc()
-                raise CircuitOpen(f"generator unavailable; retry in {self.open_until - time.monotonic():.0f} s")
+                raise CircuitOpen(f"generator unavailable; retry in {max(self.open_until - now, 1):.0f} s")
+            if self._tripped():
+                self.trial = True                          # half-open: this caller is the one trial
 
     def success(self):
         with self.lock:
-            self.fails = 0
+            self.fails, self.trial = 0, False
 
     def failure(self):
         with self.lock:
             self.fails += 1
-            if self.fails >= int(os.environ.get("NYAYA_LLM_BREAKER_FAILURES", "5")):
+            self.trial = False
+            if self._tripped():
                 self.open_until = time.monotonic() + float(os.environ.get("NYAYA_LLM_BREAKER_SECONDS", "30"))
+
+    def release(self):
+        """The call ended without saying whether the generator works (e.g. a bad request)."""
+        with self.lock:
+            self.trial = False
 
 
 BREAKER = _Breaker()
@@ -79,12 +100,24 @@ def endpoint(base: str | None = None) -> str:
     return base
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"redirect to another URL refused ({code})", headers, fp)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _max_bytes() -> int:
+    return int(float(os.environ.get("NYAYA_LLM_MAX_RESPONSE_MB", "8")) * 2 ** 20)
+
+
 def _send(base, body, timeout):
     headers = {"Content-Type": "application/json"}
     if os.environ.get("NYAYA_LLM_API_KEY"):
         headers["Authorization"] = f"Bearer {os.environ['NYAYA_LLM_API_KEY']}"
     req = urllib.request.Request(f"{base}/chat/completions", data=json.dumps(body).encode(), headers=headers)
-    return urllib.request.urlopen(req, timeout=timeout)  # base comes from endpoint(), http(s) only  # nosec B310
+    return _OPENER.open(req, timeout=timeout)  # base comes from endpoint(), http(s) only  # nosec B310
 
 
 def _request(base, body, timeout):
@@ -93,23 +126,26 @@ def _request(base, body, timeout):
     than 429) are neither retried nor counted against the generator."""
     BREAKER.check()
     attempts = 1 + max(0, int(os.environ.get("NYAYA_LLM_RETRIES", "2")))
-    for i in range(attempts):
-        try:
-            r = _send(base, body, timeout)
-            BREAKER.success()
-            return r
-        except urllib.error.HTTPError as e:
-            if e.code not in _RETRIABLE_HTTP:
-                raise
-            err, kind = e, f"http_{e.code}"
-        except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout) as e:
-            err, kind = e, type(e).__name__
-        if i == attempts - 1:
-            FAILURES.inc(kind=kind if kind.startswith("http_") else "connection")
-            BREAKER.failure()
-            raise err
-        RETRIES.inc()
-        time.sleep(min(2.0, 0.25 * 2 ** i) * (0.5 + random.random()))  # jitter: retries do not arrive in step  # nosec B311
+    try:
+        for i in range(attempts):
+            try:
+                r = _send(base, body, timeout)
+                BREAKER.success()
+                return r
+            except urllib.error.HTTPError as e:
+                if e.code not in _RETRIABLE_HTTP:
+                    raise
+                err, kind = e, f"http_{e.code}"
+            except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout) as e:
+                err, kind = e, type(e).__name__
+            if i == attempts - 1:
+                FAILURES.inc(kind=kind if kind.startswith("http_") else "connection")
+                BREAKER.failure()
+                raise err
+            RETRIES.inc()
+            time.sleep(min(2.0, 0.25 * 2 ** i) * (0.5 + random.random()))  # jitter: retries do not arrive in step  # nosec B311
+    finally:
+        BREAKER.release()                                  # a 4xx or other error must not hold the trial slot
 
 
 def _body(messages, model, temperature, max_tokens, stream, extra):
@@ -126,7 +162,10 @@ def _body(messages, model, temperature, max_tokens, stream, extra):
 def chat_full(messages, temperature=0.1, max_tokens=None, model=None, base=None, extra=None, timeout=300) -> dict:
     """{"text", "finish_reason", "usage"}; finish_reason "length" means the reply hit max_tokens."""
     with _request(endpoint(base), _body(messages, model, temperature, max_tokens, False, extra), timeout) as r:
-        d = json.loads(r.read())
+        raw = r.read(_max_bytes() + 1)
+        if len(raw) > _max_bytes():
+            raise ValueError("LLM reply larger than NYAYA_LLM_MAX_RESPONSE_MB")
+        d = json.loads(raw)
     ch = d["choices"][0]
     return {"text": ch["message"]["content"] or "", "finish_reason": ch.get("finish_reason"), "usage": d.get("usage") or {}}
 
@@ -138,7 +177,14 @@ def chat(messages, temperature=0.1, max_tokens=None, model=None, base=None, extr
 def chat_stream(messages, temperature=0.1, max_tokens=None, model=None, base=None, extra=None, timeout=300):
     """Yields ("text", piece) for every content chunk, then ("usage", dict) if the server sends it."""
     with _request(endpoint(base), _body(messages, model, temperature, max_tokens, True, extra), timeout) as r:
-        for raw in r:
+        budget = _max_bytes()
+        while True:
+            raw = r.readline(budget + 1)
+            if not raw:
+                break
+            budget -= len(raw)
+            if budget < 0:
+                raise ValueError("LLM reply larger than NYAYA_LLM_MAX_RESPONSE_MB")
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:"):
                 continue

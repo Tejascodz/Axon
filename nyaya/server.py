@@ -27,7 +27,13 @@ Protection
   * Each key setting can instead name a file, e.g. AXON_API_KEY_FILE=/run/secrets/axon_api_key
     (Docker or Kubernetes secrets), so keys never sit in the environment. The file is re-read
     when it changes, so keys rotate without a restart.
-  * AXON_RATE_PER_MIN: requests per minute per client address (default 120; 0 disables; /metrics exempt).
+  * AXON_RATE_PER_MIN: requests per minute per client (default 120; 0 disables; /metrics exempt). A
+    client is its tenant when tenant keys are used (so tenants behind one proxy address do not share
+    a limit), otherwise its address. Keys must be at least 16 characters; `deploy/make-secrets.sh`
+    makes 43-character random ones, which cannot be guessed whatever the request rate.
+  * AXON_MAX_BODY_BYTES: largest request body accepted (default 16 MiB, enough for AXON_MAX_DOCS
+    documents of AXON_MAX_CHARS); larger bodies, or bodies without a Content-Length, are refused
+    before they are read.
   * AXON_MAX_INFLIGHT: /ask requests served at once (default 16); more get 503 at once instead of
     queueing without bound (back-pressure).
   * AXON_VERIFY=1: check every answer's claims against the passages they cite and withhold unsupported
@@ -84,10 +90,24 @@ from .axon import METHODS, Axon
 from .llm import CircuitOpen
 from .metrics import REGISTRY
 
-MAX_DOCS = int(os.environ.get("AXON_MAX_DOCS", "500"))
-MAX_CHARS = int(os.environ.get("AXON_MAX_CHARS", "20000"))
-RATE = int(os.environ.get("AXON_RATE_PER_MIN", "120"))
-MAX_INFLIGHT = int(os.environ.get("AXON_MAX_INFLIGHT", "16"))
+def _env_int(name: str, default: int) -> int:
+    """An integer setting; a malformed value is a start-up error, not a failure on every request."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"{name} must be an integer, got {raw!r}") from None
+
+
+MAX_DOCS = _env_int("AXON_MAX_DOCS", 500)
+MAX_CHARS = _env_int("AXON_MAX_CHARS", 20000)
+RATE = _env_int("AXON_RATE_PER_MIN", 120)
+MAX_INFLIGHT = _env_int("AXON_MAX_INFLIGHT", 16)
+MAX_BODY = _env_int("AXON_MAX_BODY_BYTES", 16 * 2 ** 20)
+HOPS = _env_int("AXON_HOPS", 2)
+FOLLOW_UPS = min(max(_env_int("AXON_FOLLOW_UPS", 0), 0), 3)
 UI = {"/": "HTML", "/ui.js": "JS", "/ui.css": "CSS"}
 UI_TYPES = {"HTML": "text/html; charset=utf-8", "JS": "text/javascript; charset=utf-8", "CSS": "text/css; charset=utf-8"}
 ROUTES = {"/health", "/ready", "/metrics", "/rerank", "/ask", "/docs", "/openapi.json", *UI}
@@ -104,7 +124,7 @@ _inflight_lock = threading.Lock()
 
 
 def _rss_bytes():
-    with open("/proc/self/statm") as f:                      # Linux; elsewhere the sample is left out
+    with open("/proc/self/statm", encoding="ascii") as f:                      # Linux; elsewhere the sample is left out
         return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
 
 
@@ -230,6 +250,7 @@ def _preload():
 
 
 def _allowed(client: str) -> bool:
+    """Sliding one-minute window of RATE requests per client."""
     if RATE <= 0:
         return True
     now = time.monotonic()
@@ -246,6 +267,12 @@ def _allowed(client: str) -> bool:
         return True
 
 
+def _identity(tenant, address: str) -> str:
+    """Who a request is, for rate limiting: its tenant (verified by its key), else its address. Never
+    the raw Authorization header: a client could vary it to escape the limit."""
+    return f"tenant:{tenant}" if tenant is not None else f"ip:{address}"
+
+
 _secret_cache: dict = {}
 
 
@@ -260,7 +287,7 @@ def _secret(name: str):
     st = os.stat(path)
     key = (path, st.st_mtime_ns, st.st_size)
     if _secret_cache.get(name, (None,))[0] != key:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             _secret_cache[name] = (key, f.read().strip())
     return _secret_cache[name][1] or None
 
@@ -280,13 +307,19 @@ def _tenant_keys():
     return pairs
 
 
+MIN_KEY_CHARS = 16
+
+
 def _authorize(raw: str, got: bytes):
     """(None, tenant) when the request may go on, else ((status, detail), None). Every configured key
-    is compared, in constant time, whatever matches first."""
+    is compared, in constant time, whatever matches first. Keys shorter than 16 characters are
+    refused as a misconfiguration: a short key could be guessed."""
     try:
         tenant_keys, key, metrics_key = _tenant_keys(), _secret("AXON_API_KEY"), _secret("AXON_METRICS_KEY")
     except OSError:
         return (503, "server misconfigured: a key file cannot be read"), None
+    if any(k is not None and len(k) < MIN_KEY_CHARS for k in (key, metrics_key)):
+        return (503, f"server misconfigured: keys need at least {MIN_KEY_CHARS} characters"), None
     if raw == "/metrics" and metrics_key:                  # least privilege: the scraper's key reads metrics only
         return (None if hmac.compare_digest(got, f"Bearer {metrics_key}".encode()) else (401, "unauthorized")), None
     if tenant_keys is None:
@@ -306,7 +339,8 @@ def _authorize(raw: str, got: bytes):
 
 def _deny(path, rid, status, detail):
     REQS.inc(path=path, status=str(status))
-    return JSONResponse({"detail": detail}, status_code=status, headers={"X-Request-ID": rid})
+    return JSONResponse({"detail": detail}, status_code=status,
+                        headers={"X-Request-ID": rid, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
 
 
 @app.middleware("http")
@@ -319,9 +353,18 @@ async def guard(request: Request, call_next):
     t0 = time.perf_counter()
     status = 500
     try:
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            size = request.headers.get("content-length")
+            if size is None or not size.isdigit():
+                status = 411
+                return _deny(path, rid, 411, "Content-Length required")
+            if int(size) > MAX_BODY:
+                status = 413
+                return _deny(path, rid, 413, f"request body larger than {MAX_BODY} bytes")
         if raw not in OPEN:
+            address = request.client.host if request.client else "unknown"
             denied, request.state.tenant = _authorize(raw, request.headers.get("authorization", "").encode())
-            if not denied and raw != "/metrics" and not _allowed(request.client.host if request.client else "unknown"):
+            if not denied and raw != "/metrics" and not _allowed(_identity(request.state.tenant, address)):
                 denied = (429, "rate limit exceeded")
             if denied:
                 status = denied[0]
@@ -417,22 +460,21 @@ def ask(req: AskRequest, request: Request):
         _inflight[0] += 1
     try:
         v, det = verifier(), detector()
-        hops = int(os.environ.get("AXON_HOPS", "2"))
         expand = os.environ.get("AXON_EXPAND") or None
         out = pipeline().answer(req.question, k=req.k, tenant=request.state.tenant,
-                                retrieve_kw={"hops": hops, "hop_mode": "titles", "hop_slots": 2} if hops > 1 else None,
+                                retrieve_kw={"hops": HOPS, "hop_mode": "titles", "hop_slots": 2} if HOPS > 1 else None,
                                 echo_filter=os.environ.get("AXON_ECHO_FILTER", "1") == "1",
                                 expand=expand if expand in ("bm25", "append", "replace") else None,
-                                follow_ups=min(max(int(os.environ.get("AXON_FOLLOW_UPS", "0")), 0), 3),
+                                follow_ups=FOLLOW_UPS,
                                 **({"verifier": v} if v else {}), **({"detector": det} if det else {}))
         out["request_id"] = request.state.request_id
         return out
     except HTTPException:
         raise
     except PermissionError:
-        raise HTTPException(403, "this index is multi-tenant: use a tenant key")
+        raise HTTPException(403, "this index is multi-tenant: use a tenant key") from None
     except CircuitOpen:                          # generator down: fail fast, tell the client when to retry
-        raise HTTPException(503, "generator unavailable, retry shortly", headers={"Retry-After": "10"})
+        raise HTTPException(503, "generator unavailable, retry shortly", headers={"Retry-After": "10"}) from None
     except Exception as e:                       # generator unreachable, etc.: no internals in the reply
         oom = "out of memory" in str(e).lower() or type(e).__name__ == "OutOfMemoryError"
         log.info(json.dumps({"event": "ask_failed", "request_id": request.state.request_id,
@@ -441,8 +483,8 @@ def ask(req: AskRequest, request: Request):
             with contextlib.suppress(Exception):
                 import torch
                 torch.cuda.empty_cache()
-            raise HTTPException(503, "server out of GPU memory, retry shortly", headers={"Retry-After": "5"})
-        raise HTTPException(502, f"generation failed: {type(e).__name__}")
+            raise HTTPException(503, "server out of GPU memory, retry shortly", headers={"Retry-After": "5"}) from None
+        raise HTTPException(502, f"generation failed: {type(e).__name__}") from None
     finally:
         with _inflight_lock:
             _inflight[0] -= 1

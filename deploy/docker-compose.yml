@@ -10,6 +10,7 @@ name: axon
 
 x-llm: &llm
   restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
   shm_size: 8gb
   volumes: [hf-cache:/root/.cache/huggingface]
   environment:

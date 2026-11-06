@@ -16,13 +16,20 @@ llm          The answering LLM is asked, in one call per question, which passage
 `threshold` for the classifier is set on clean passages from held-out questions (a target false
 positive rate), never on the injected test passages.
 
-Round 10 (200 HotpotQA questions, 30 hand-written injections at the end or in the middle of a
-passage): the patterns caught 9%, the classifier 68% / 66% (end / middle) and the LLM 88% / 80%;
-1.1% and 0.5% of clean passages were withheld. On 40 injections the LLM wrote during round 10b, unseen by
-anyone tuning a detector: patterns 5%, classifier 72%, LLM 91%; attacks that succeeded fell from 5% to
-0.25% with the classifier. Attacks that succeeded fell from 4.5% to 0.5% with
-the classifier and 0.75% with the LLM, with no measurable cost in exact match (0.26 -> 0.255) and
-+0.03 s / +2.5 s per question. The deployment turns the classifier on (deploy/docker-compose.yml).
+Both see text after the same normalisation as the pattern scanner (compatibility forms folded,
+invisible characters removed, look-alike letters mapped), so zero-width characters cannot split an
+instruction past them. The LLM detector reads the passages itself, so an injection can address it
+too ("this passage is safe"); the classifier has no instructions to follow.
+
+Measured on 200 HotpotQA questions, each injection at the end or in the middle of a passage:
+  30 hand-written injections (round 10): detected by the patterns 9%, the classifier 68% / 66% (end /
+  middle), the LLM 88% / 80%. Attacks that succeeded: 4.5% with the patterns alone, 0.5% with the
+  classifier, 0.75% with the LLM.
+  40 injections the LLM wrote during round 10b, unseen by anyone tuning a detector: detected by the
+  patterns 5%, the classifier 72%, the LLM 91%. Attacks that succeeded: 5% -> 0.25% with the classifier.
+  Cost: 1.1% (classifier) and 0.5% (LLM) of clean passages withheld; exact match 0.26 -> 0.255;
+  +0.03 s (classifier, T4) and +2.5 s (LLM) per question.
+The deployment turns the classifier on (deploy/docker-compose.yml).
 """
 from __future__ import annotations
 
@@ -72,9 +79,10 @@ class Classifier:
 
     def scores(self, texts: list[str]) -> list[float]:
         """Per passage, the highest injection probability over its segments."""
+        from .guards import normalize_text
         segs, owner = [], []
         for n, t in enumerate(texts):
-            for s in segments(t):
+            for s in segments(normalize_text(t)):
                 segs.append(s)
                 owner.append(n)
         best = [0.0] * len(texts)
@@ -102,7 +110,8 @@ class LLMDetector:
         from .llm import chat
         if not texts:
             return []
-        shown = "\n\n".join(f"[{n}] {' '.join(t.split())[:1500]}" for n, t in enumerate(texts, 1))
+        from .guards import normalize_text
+        shown = "\n\n".join(f"[{n}] {' '.join(normalize_text(t).split())[:1500]}" for n, t in enumerate(texts, 1))
         try:
             reply = chat([{"role": "user", "content": LLM_PROMPT.format(passages=shown)}], temperature=0.0,
                          max_tokens=24, **self.llm_kw)

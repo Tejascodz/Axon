@@ -10,8 +10,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.11"
       - name: Install
@@ -30,8 +32,10 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
       - name: Install the image's dependency set (same overrides as deploy/Dockerfile)
@@ -52,7 +56,9 @@ jobs:
   monitoring:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
       - name: promtool (Prometheus 3.4.1, checksum verified)
         run: |
           curl -sSL -o p.tgz https://github.com/prometheus/prometheus/releases/download/v3.4.1/prometheus-3.4.1.linux-amd64.tar.gz
@@ -71,7 +77,9 @@ jobs:
     env:
       COMPOSE: docker compose -f deploy/docker-compose.yml -f deploy/ci/compose.ci.yml
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
       - name: Settings and secrets
         run: |
           cp deploy/.env.example deploy/.env
@@ -95,7 +103,7 @@ jobs:
           docker run --rm -i axon:1.0 python - < deploy/ci/plaid_check.py
       - name: Build an index with the real model inside the image
         run: |
-          mkdir -p deploy/index && chmod 777 deploy/index
+          mkdir -p deploy/index && sudo chown 10001:10001 deploy/index   # the image's user writes the index
           $COMPOSE run --rm -v "$PWD/deploy/ci/docs:/docs:ro" -v "$PWD/deploy/index:/index-rw" axon \
             python -m nyaya.rag build --src /docs --out /index-rw
       - name: Start the stack

@@ -20,6 +20,8 @@ import uuid
 import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from .metrics import REGISTRY
@@ -35,8 +37,8 @@ LOCK = threading.Lock()                      # one generation at a time: the nai
 
 
 class Message(BaseModel):
-    role: str
-    content: str
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(max_length=200_000)
 
 
 class ChatRequest(BaseModel):

@@ -61,7 +61,13 @@ reservation, as the LLM services have.
   `tenant:key` pairs, one per line or comma-separated, each key at least 16 characters. The key decides
   the tenant. A malformed file makes Axon refuse every request (503); it never turns authentication off.
 * The image sets `AXON_REQUIRE_AUTH=1`. If no key is configured, every request gets 503 instead of
-  being served without authentication.
+  being served without authentication. A key shorter than 16 characters also gets 503: it is treated
+  as a misconfiguration, not used. `deploy/make-secrets.sh` writes 43-character random keys.
+* Rate limits (`AXON_RATE_PER_MIN`) count per tenant when tenant keys are used, so tenants behind one
+  proxy do not share a limit; otherwise per client address (behind a proxy, every client shares the
+  proxy's address, so raise the limit or limit at the proxy). Failed keys are not throttled: a random
+  key of 16+ characters cannot be guessed, so put request limits for unauthenticated traffic at the proxy.
+* Request bodies need a `Content-Length` and are capped at `AXON_MAX_BODY_BYTES` (16 MiB).
 
 **Rotating a key.** Write the new value into the file. Axon re-reads a key file when it changes, with no
 restart. Clients holding the old key get 401 from then on, so hand out the new key first. After rotating
@@ -88,8 +94,9 @@ python -m nyaya.rag compact --index deploy/index               # when deleted ch
 ## Upgrades and rollback
 
 * Axon: `docker compose build axon && docker compose up -d axon`. To roll back, set `AXON_TAG` to the
-  previous tag and run `up -d axon`. Index format 2 is read by every 1.x release. Format-1 (padded)
-  indexes still load, but `update` asks you to rebuild them once.
+  previous tag and run `up -d axon`. Indexes are format 3; format-2 indexes load as they are and are
+  migrated by the next `update` or `compact`. An index written by a newer release may not load in an
+  older one, so back up the index folder before upgrading.
 * LLM server: change `SGLANG_IMAGE` or `VLLM_IMAGE` and run `up -d`. Re-run the serving benchmark
   (`scripts/round5.py --rebench`) before and after. Server versions have changed latency by 2x or more
   on the same GPU.
@@ -124,7 +131,8 @@ Container logs rotate at 5 x 50 MB per service.
 
 * Retrieval, 7,000 passages: p50 63 ms, p95 78 ms, p99 123 ms for the first stage plus re-ranking.
   Exact search and PLAID gave the same recall@100 (0.992 and 0.993). Exact search was faster at that
-  size (32 ms against 65 ms). Round 6 measures where PLAID starts to pay off.
+  size (32 ms against 65 ms). In round 6, PLAID tied exact search at 100,000 passages and was faster
+  at 150,000, so build with `--plaid` above about 100,000.
 * Generation, Qwen3-4B on SGLang, prompts of about 850 tokens: time to first token 306 ms at one request,
   37 ms per output token, 193 tokens/s at 16 concurrent requests.
 * `AXON_MAX_INFLIGHT` should be about the LLM's `--max-running-requests`. Above that, requests only queue
@@ -217,8 +225,8 @@ Usual causes:
 
 ### IndexNeedsCompaction
 Over 30% of the index is deleted chunks. They cost memory and search time but are never returned.
-Run `python -m nyaya.rag compact --index deploy/index` at a quiet time. It renumbers chunks and rebuilds
-PLAID, and Axon picks up the result live.
+Run `python -m nyaya.rag compact --index deploy/index` at a quiet time. It keeps chunk ids and a PLAID
+index that matches (rebuilding PLAID only if it does not), and Axon picks up the result live.
 
 ### AxonMemoryGrowing
 Resident memory has grown by over about 70 MB an hour for 3 hours. Expected jumps:
