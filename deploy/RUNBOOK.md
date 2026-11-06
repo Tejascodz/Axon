@@ -38,7 +38,7 @@ Answer-time options (`deploy/.env`; each was measured in round 10, `results/ROUN
 
 | Setting | Default here | What it buys | What it costs |
 |---|---|---|---|
-| `AXON_INJECTION_DETECTOR=classifier` | on | injection attacks that succeed 4.5% -> 0.5% (30 hand-written attacks) | 1.1% of clean passages withheld; +0.7 GB RAM; +0.03 s per question on a T4 (CPU not measured) |
+| `AXON_INJECTION_DETECTOR=classifier` | on | injection attacks that succeed 4.5% -> 0.5% (30 hand-written attacks); 5% -> 0.25% (40 unseen, LLM-written) | 1.1% of clean passages withheld; +0.7 GB RAM; +0.03 s per question on a T4 (CPU not measured) |
 | `AXON_INJECTION_DETECTOR=llm` | off | 0.75% attack success, 0.5% of clean passages withheld | one LLM call per question (+2.5 s) |
 | `AXON_ECHO_FILTER=1` | on | planted passages that restate the question: false answers 21% -> 0% | HotpotQA exact match 0.334 -> 0.312 on clean questions |
 | `AXON_FOLLOW_UPS=2` | off | MuSiQue all supporting passages in top 10: 0.42 -> 0.53; HotpotQA exact match 0.334 -> 0.350 | about twice the latency (5.2 s -> 10.8 s at 8 concurrent) |

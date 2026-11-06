@@ -18,7 +18,9 @@ positive rate), never on the injected test passages.
 
 Round 10 (200 HotpotQA questions, 30 hand-written injections at the end or in the middle of a
 passage): the patterns caught 9%, the classifier 68% / 66% (end / middle) and the LLM 88% / 80%;
-1.1% and 0.5% of clean passages were withheld. Attacks that succeeded fell from 4.5% to 0.5% with
+1.1% and 0.5% of clean passages were withheld. On 40 injections the LLM wrote during round 10b, unseen by
+anyone tuning a detector: patterns 5%, classifier 72%, LLM 91%; attacks that succeeded fell from 5% to
+0.25% with the classifier. Attacks that succeeded fell from 4.5% to 0.5% with
 the classifier and 0.75% with the LLM, with no measurable cost in exact match (0.26 -> 0.255) and
 +0.03 s / +2.5 s per question. The deployment turns the classifier on (deploy/docker-compose.yml).
 """

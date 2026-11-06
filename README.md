@@ -298,9 +298,10 @@ Better retrieval only partly reaches the answers. On MuSiQue the 4B model abstai
 | 3 planted passages that restate the question and give a false answer | false answer 21% | 0% with the echo filter (on in the server) | exact match 0.334 to 0.312 (HotpotQA, 500) |
 | the same, paraphrased | 16% | 9% with echo filter and near-duplicate filter | exact match 0.29 to 0.26 (100) |
 | 30 hand-written injections, end or middle of a passage | patterns detect 9%; 4.5% of attacks succeed | classifier detects 68%: **0.5%** succeed (LLM check: 0.75%) | 1.1% of clean passages withheld; exact match 0.260 to 0.255 |
+| 40 injections the LLM wrote during the run (round 10b), unseen by anyone tuning a detector | patterns detect 5%; 5% of attacks succeed | classifier detects 72%: **0.25%** succeed (LLM check: 0%) | exact match 0.26 with or without the classifier |
 | 440 questions written to pull another tenant's documents | | 0 of 4,400 results crossed tenants | |
 
-Round 9 found that the pattern scanner catches 10% of injections written after it. Round 10 adds a learned detector, ProtectAI's DeBERTa-v3 prompt-injection classifier, applied sentence by sentence (sentence-level detection works best: Chen et al., ACL 2025). The deployment turns it on. Asking each passage alone and voting (RobustRAG-style) was tried in round 9 and dropped: it cut exact match on clean questions from 0.27 to 0.02. Round 10 also tried injections written by the LLM itself, but most of them came out as the code alone, without an instruction, so that part measured nothing; the script now rejects such replies.
+Round 9 found that the pattern scanner catches 10% of injections written after it. Round 10 adds a learned detector, ProtectAI's DeBERTa-v3 prompt-injection classifier, applied sentence by sentence (sentence-level detection works best: Chen et al., ACL 2025). The deployment turns it on. Asking each passage alone and voting (RobustRAG-style) was tried in round 9 and dropped: it cut exact match on clean questions from 0.27 to 0.02. Round 10's first try at injections written by the LLM measured nothing (most came out as the code alone, without an instruction); round 10b reran that part with a sentence required, and the results above are from it. The LLM check did best on those, but they were written by the same model family it uses, which may favour it.
 
 ## Run it in production
 
@@ -648,7 +649,7 @@ Full tables are in `results/ROUND4.md`.
 
 **Round 7 / 7b, Kaggle T4 x2**: see "Production checks" and "Claim-level evidence checking". Round 7's load test found GPU out-of-memory errors (everything on one GPU), a live update that failed for the same reason, and an artefact in how tenants were assigned. Round 7b re-ran it after the fixes and found the tokenizer concurrency bug.
 
-**Rounds 8 and 10, Kaggle T4 x2**: see "Hard benchmarks, attacks and fixes". Round 8 (with round 9's attack tests) found the weak spots; round 10 ran the fixes in about 2.5 h with no failed step. One part of round 10 measured nothing: most injections the LLM was asked to write came back as the code alone, and the script now rejects those.
+**Rounds 8 and 10, Kaggle T4 x2**: see "Hard benchmarks, attacks and fixes". Round 8 (with round 9's attack tests) found the weak spots; round 10 ran the fixes in about 2.5 h with no failed step. One part of round 10 measured nothing: most injections the LLM was asked to write came back as the code alone. Round 10b (about 1.5 h) reran just that part with real sentences required (`results/r10b_run1`).
 
 MultiConIR's "T2 Positive > HN1" uses the same document pairs as "T1 with 10 conditions", so it is reported once.
 
