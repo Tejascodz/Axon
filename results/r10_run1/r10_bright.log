@@ -1,0 +1,89 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/134 [00:00<?, ?it/s]Loading weights: 100%|██████████| 134/134 [00:00<00:00, 2327.87it/s]
+Generating biology split:   0%|          | 0/103 [00:00<?, ? examples/s]Generating biology split: 100%|██████████| 103/103 [00:00<00:00, 1437.16 examples/s]
+Generating earth_science split:   0%|          | 0/116 [00:00<?, ? examples/s]Generating earth_science split: 100%|██████████| 116/116 [00:00<00:00, 20152.39 examples/s]
+Generating economics split:   0%|          | 0/103 [00:00<?, ? examples/s]Generating economics split: 100%|██████████| 103/103 [00:00<00:00, 20679.40 examples/s]
+Generating psychology split:   0%|          | 0/101 [00:00<?, ? examples/s]Generating psychology split: 100%|██████████| 101/101 [00:00<00:00, 26425.34 examples/s]
+Generating robotics split:   0%|          | 0/101 [00:00<?, ? examples/s]Generating robotics split: 100%|██████████| 101/101 [00:00<00:00, 24019.09 examples/s]
+Generating stackoverflow split:   0%|          | 0/117 [00:00<?, ? examples/s]Generating stackoverflow split: 100%|██████████| 117/117 [00:00<00:00, 26737.15 examples/s]
+Generating sustainable_living split:   0%|          | 0/108 [00:00<?, ? examples/s]Generating sustainable_living split: 100%|██████████| 108/108 [00:00<00:00, 23435.50 examples/s]
+Generating pony split:   0%|          | 0/112 [00:00<?, ? examples/s]Generating pony split: 100%|██████████| 112/112 [00:00<00:00, 32386.21 examples/s]
+Generating leetcode split:   0%|          | 0/142 [00:00<?, ? examples/s]Generating leetcode split: 100%|██████████| 142/142 [00:00<00:00, 22404.96 examples/s]
+Generating aops split:   0%|          | 0/111 [00:00<?, ? examples/s]Generating aops split: 100%|██████████| 111/111 [00:00<00:00, 1661.09 examples/s]
+Generating theoremqa_theorems split:   0%|          | 0/76 [00:00<?, ? examples/s]Generating theoremqa_theorems split: 100%|██████████| 76/76 [00:00<00:00, 14890.09 examples/s]
+Generating theoremqa_questions split:   0%|          | 0/194 [00:00<?, ? examples/s]Generating theoremqa_questions split: 100%|██████████| 194/194 [00:00<00:00, 3312.52 examples/s]
+Generating biology split:   0%|          | 0/57359 [00:00<?, ? examples/s]Generating biology split: 100%|██████████| 57359/57359 [00:00<00:00, 587364.76 examples/s]
+Generating earth_science split:   0%|          | 0/121249 [00:00<?, ? examples/s]Generating earth_science split:  54%|█████▎    | 65000/121249 [00:00<00:00, 636237.69 examples/s]Generating earth_science split: 100%|██████████| 121249/121249 [00:00<00:00, 683076.41 examples/s]
+Generating economics split:   0%|          | 0/50220 [00:00<?, ? examples/s]Generating economics split: 100%|██████████| 50220/50220 [00:00<00:00, 585754.62 examples/s]
+Generating psychology split:   0%|          | 0/52835 [00:00<?, ? examples/s]Generating psychology split: 100%|██████████| 52835/52835 [00:00<00:00, 618027.31 examples/s]
+Generating robotics split:   0%|          | 0/61961 [00:00<?, ? examples/s]Generating robotics split: 100%|██████████| 61961/61961 [00:00<00:00, 857295.96 examples/s]
+Generating stackoverflow split:   0%|          | 0/107081 [00:00<?, ? examples/s]Generating stackoverflow split:  21%|██▏       | 23000/107081 [00:00<00:00, 226244.31 examples/s]Generating stackoverflow split:  56%|█████▌    | 60000/107081 [00:00<00:00, 305208.71 examples/s]Generating stackoverflow split:  87%|████████▋ | 93000/107081 [00:00<00:00, 311165.32 examples/s]Generating stackoverflow split: 100%|██████████| 107081/107081 [00:00<00:00, 303437.08 examples/s]
+Generating sustainable_living split:   0%|          | 0/60792 [00:00<?, ? examples/s]Generating sustainable_living split: 100%|██████████| 60792/60792 [00:00<00:00, 681854.38 examples/s]
+Generating pony split:   0%|          | 0/7894 [00:00<?, ? examples/s]Generating pony split: 100%|██████████| 7894/7894 [00:00<00:00, 647726.51 examples/s]
+Generating leetcode split:   0%|          | 0/413932 [00:00<?, ? examples/s]Generating leetcode split:   5%|▍         | 19000/413932 [00:00<00:02, 185867.43 examples/s]Generating leetcode split:  12%|█▏        | 50000/413932 [00:00<00:01, 246936.17 examples/s]Generating leetcode split:  20%|██        | 83000/413932 [00:00<00:01, 224549.36 examples/s]Generating leetcode split:  26%|██▌       | 108000/413932 [00:00<00:01, 231179.22 examples/s]Generating leetcode split:  32%|███▏      | 133000/413932 [00:00<00:01, 234942.13 examples/s]Generating leetcode split:  40%|███▉      | 164000/413932 [00:00<00:00, 256702.01 examples/s]Generating leetcode split:  47%|████▋     | 196000/413932 [00:00<00:00, 272090.78 examples/s]Generating leetcode split:  57%|█████▋    | 236000/413932 [00:00<00:00, 265185.01 examples/s]Generating leetcode split:  64%|██████▎   | 263000/413932 [00:01<00:00, 263053.51 examples/s]Generating leetcode split:  71%|███████▏  | 295000/413932 [00:01<00:00, 275254.59 examples/s]Generating leetcode split:  79%|███████▉  | 327000/413932 [00:01<00:00, 285252.59 examples/s]Generating leetcode split:  89%|████████▊ | 367000/413932 [00:01<00:00, 273427.72 examples/s]Generating leetcode split:  95%|█████████▌| 395000/413932 [00:01<00:00, 272248.84 examples/s]Generating leetcode split: 100%|██████████| 413932/413932 [00:01<00:00, 260769.19 examples/s]
+Generating aops split:   0%|          | 0/188002 [00:00<?, ? examples/s]Generating aops split:  23%|██▎       | 44000/188002 [00:00<00:00, 420649.33 examples/s]Generating aops split:  53%|█████▎    | 99000/188002 [00:00<00:00, 303530.93 examples/s]Generating aops split:  80%|████████  | 151000/188002 [00:00<00:00, 374020.41 examples/s]Generating aops split: 100%|██████████| 188002/188002 [00:00<00:00, 389733.63 examples/s]
+Generating theoremqa_theorems split:   0%|          | 0/23839 [00:00<?, ? examples/s]Generating theoremqa_theorems split: 100%|██████████| 23839/23839 [00:00<00:00, 413905.64 examples/s]
+Generating theoremqa_questions split:   0%|          | 0/188002 [00:00<?, ? examples/s]Generating theoremqa_questions split:  24%|██▍       | 45000/188002 [00:00<00:00, 437847.23 examples/s]Generating theoremqa_questions split:  58%|█████▊    | 109000/188002 [00:00<00:00, 339862.56 examples/s]Generating theoremqa_questions split:  89%|████████▉ | 167000/188002 [00:00<00:00, 418804.90 examples/s]Generating theoremqa_questions split: 100%|██████████| 188002/188002 [00:00<00:00, 415650.45 examples/s]
+20:04:25 encoded 32/57359
+20:04:56 encoded 6432/57359
+20:05:26 encoded 12832/57359
+20:05:55 encoded 19232/57359
+20:06:25 encoded 25632/57359
+20:07:01 encoded 32032/57359
+20:07:45 encoded 38432/57359
+20:08:27 encoded 44832/57359
+20:09:06 encoded 51232/57359
+20:10:40 bright dev bm25=plain,weight=1.0,rerank=grouped: {'first_stage_ndcg@10': 0.1557, 'final_ndcg@10': 0.1207, 'queries': 103}
+20:11:16 bright dev bm25=plain,weight=1.0,rerank=colbert: {'first_stage_ndcg@10': 0.1557, 'final_ndcg@10': 0.1728, 'queries': 103}
+20:11:53 bright dev bm25=plain,weight=1.0,rerank=auto: {'first_stage_ndcg@10': 0.1557, 'final_ndcg@10': 0.1757, 'queries': 103}
+20:12:47 bright dev bm25=plain,weight=0.5,rerank=grouped: {'first_stage_ndcg@10': 0.1724, 'final_ndcg@10': 0.1152, 'queries': 103}
+20:13:25 bright dev bm25=plain,weight=0.5,rerank=colbert: {'first_stage_ndcg@10': 0.1724, 'final_ndcg@10': 0.1728, 'queries': 103}
+20:14:02 bright dev bm25=plain,weight=0.5,rerank=auto: {'first_stage_ndcg@10': 0.1724, 'final_ndcg@10': 0.1757, 'queries': 103}
+20:14:47 bright dev bm25=plain,weight=0.0,rerank=grouped: {'first_stage_ndcg@10': 0.1728, 'final_ndcg@10': 0.115, 'queries': 103}
+20:15:22 bright dev bm25=plain,weight=0.0,rerank=colbert: {'first_stage_ndcg@10': 0.1728, 'final_ndcg@10': 0.1728, 'queries': 103}
+20:15:57 bright dev bm25=plain,weight=0.0,rerank=auto: {'first_stage_ndcg@10': 0.1728, 'final_ndcg@10': 0.1757, 'queries': 103}
+20:16:47 bright dev bm25=english,weight=1.0,rerank=grouped: {'first_stage_ndcg@10': 0.1551, 'final_ndcg@10': 0.1219, 'queries': 103}
+20:17:23 bright dev bm25=english,weight=1.0,rerank=colbert: {'first_stage_ndcg@10': 0.1551, 'final_ndcg@10': 0.1728, 'queries': 103}
+20:18:00 bright dev bm25=english,weight=1.0,rerank=auto: {'first_stage_ndcg@10': 0.1551, 'final_ndcg@10': 0.1757, 'queries': 103}
+20:18:43 bright dev bm25=english,weight=0.5,rerank=grouped: {'first_stage_ndcg@10': 0.1646, 'final_ndcg@10': 0.1152, 'queries': 103}
+20:19:19 bright dev bm25=english,weight=0.5,rerank=colbert: {'first_stage_ndcg@10': 0.1646, 'final_ndcg@10': 0.1728, 'queries': 103}
+20:19:56 bright dev bm25=english,weight=0.5,rerank=auto: {'first_stage_ndcg@10': 0.1646, 'final_ndcg@10': 0.1757, 'queries': 103}
+20:20:41 bright dev bm25=english,weight=0.0,rerank=grouped: {'first_stage_ndcg@10': 0.1728, 'final_ndcg@10': 0.115, 'queries': 103}
+20:21:52 bright dev bm25=english,weight=0.0,rerank=colbert: {'first_stage_ndcg@10': 0.1728, 'final_ndcg@10': 0.1728, 'queries': 103}
+20:22:39 bright dev bm25=english,weight=0.0,rerank=auto: {'first_stage_ndcg@10': 0.1728, 'final_ndcg@10': 0.1757, 'queries': 103}
+20:23:26 bright dev bm25=plain,weight=1.0,rerank=auto,expand=bm25: {'first_stage_ndcg@10': 0.3052, 'final_ndcg@10': 0.1763, 'queries': 103}
+20:24:06 bright dev bm25=plain,weight=0.5,rerank=auto,expand=bm25: {'first_stage_ndcg@10': 0.2696, 'final_ndcg@10': 0.1757, 'queries': 103}
+20:24:56 bright dev bm25=plain,weight=1.0,rerank=auto,expand=append: {'first_stage_ndcg@10': 0.3908, 'final_ndcg@10': 0.3085, 'queries': 103}
+20:25:45 bright dev bm25=plain,weight=0.5,rerank=auto,expand=append: {'first_stage_ndcg@10': 0.3735, 'final_ndcg@10': 0.3085, 'queries': 103}
+20:26:34 bright dev bm25=plain,weight=1.0,rerank=auto,expand=replace: {'first_stage_ndcg@10': 0.4276, 'final_ndcg@10': 0.3817, 'queries': 103}
+20:27:23 bright dev bm25=plain,weight=0.5,rerank=auto,expand=replace: {'first_stage_ndcg@10': 0.42, 'final_ndcg@10': 0.3815, 'queries': 103}
+20:27:26 encoded 32/50220
+20:28:28 encoded 6432/50220
+20:29:32 encoded 12832/50220
+20:30:35 encoded 19232/50220
+20:31:38 encoded 25632/50220
+20:32:42 encoded 32032/50220
+20:33:49 encoded 38432/50220
+20:34:50 encoded 44832/50220
+20:39:13 bright test economics: {"round8_setting": {"first_stage_ndcg@10": 0.1794, "final_ndcg@10": 0.1401, "queries": 103}, "chosen": {"first_stage_ndcg@10": 0.1794, "final_ndcg@10": 0.1885, "queries": 103}, "no_bm25": {"first_stage_ndcg@10": 0.1885, "final_ndcg@10": 0.1293, "queries": 103}, "chosen_with_expansion": {"first_stage_ndcg@10": 0.2484, "final_ndcg@10": 0.2532, "queries": 103}}
+20:39:16 encoded 32/52835
+20:40:23 encoded 6432/52835
+20:41:31 encoded 12832/52835
+20:42:37 encoded 19232/52835
+20:43:40 encoded 25632/52835
+20:44:46 encoded 32032/52835
+20:45:52 encoded 38432/52835
+20:47:01 encoded 44832/52835
+20:48:08 encoded 51232/52835
+20:52:04 bright test psychology: {"round8_setting": {"first_stage_ndcg@10": 0.1512, "final_ndcg@10": 0.1782, "queries": 101}, "chosen": {"first_stage_ndcg@10": 0.1512, "final_ndcg@10": 0.214, "queries": 101}, "no_bm25": {"first_stage_ndcg@10": 0.2131, "final_ndcg@10": 0.169, "queries": 101}, "chosen_with_expansion": {"first_stage_ndcg@10": 0.3128, "final_ndcg@10": 0.3275, "queries": 101}}
+20:52:07 encoded 32/61961
+20:53:14 encoded 6432/61961
+20:54:48 encoded 12832/61961
+20:56:30 encoded 19232/61961
+20:57:34 encoded 25632/61961
+20:58:31 encoded 32032/61961
+20:59:27 encoded 38432/61961
+21:00:29 encoded 44832/61961
+21:01:28 encoded 51232/61961
+21:02:37 encoded 57632/61961
+21:06:52 bright test robotics: {"round8_setting": {"first_stage_ndcg@10": 0.1491, "final_ndcg@10": 0.1467, "queries": 101}, "chosen": {"first_stage_ndcg@10": 0.1491, "final_ndcg@10": 0.1467, "queries": 101}, "no_bm25": {"first_stage_ndcg@10": 0.1535, "final_ndcg@10": 0.1281, "queries": 101}, "chosen_with_expansion": {"first_stage_ndcg@10": 0.1931, "final_ndcg@10": 0.1925, "queries": 101}}

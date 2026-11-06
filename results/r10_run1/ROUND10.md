@@ -1,0 +1,655 @@
+# Round 10
+
+## bright_tuned
+
+```
+{
+ "dev_domain": "biology",
+ "dev_grid": {
+  "bm25=plain,weight=1.0,rerank=grouped": {
+   "first_stage_ndcg@10": 0.1557,
+   "final_ndcg@10": 0.1207,
+   "queries": 103
+  },
+  "bm25=plain,weight=1.0,rerank=colbert": {
+   "first_stage_ndcg@10": 0.1557,
+   "final_ndcg@10": 0.1728,
+   "queries": 103
+  },
+  "bm25=plain,weight=1.0,rerank=auto": {
+   "first_stage_ndcg@10": 0.1557,
+   "final_ndcg@10": 0.1757,
+   "queries": 103
+  },
+  "bm25=plain,weight=0.5,rerank=grouped": {
+   "first_stage_ndcg@10": 0.1724,
+   "final_ndcg@10": 0.1152,
+   "queries": 103
+  },
+  "bm25=plain,weight=0.5,rerank=colbert": {
+   "first_stage_ndcg@10": 0.1724,
+   "final_ndcg@10": 0.1728,
+   "queries": 103
+  },
+  "bm25=plain,weight=0.5,rerank=auto": {
+   "first_stage_ndcg@10": 0.1724,
+   "final_ndcg@10": 0.1757,
+   "queries": 103
+  },
+  "bm25=plain,weight=0.0,rerank=grouped": {
+   "first_stage_ndcg@10": 0.1728,
+   "final_ndcg@10": 0.115,
+   "queries": 103
+  },
+  "bm25=plain,weight=0.0,rerank=colbert": {
+   "first_stage_ndcg@10": 0.1728,
+   "final_ndcg@10": 0.1728,
+   "queries": 103
+  },
+  "bm25=plain,weight=0.0,rerank=auto": {
+   "first_stage_ndcg@10": 0.1728,
+   "final_ndcg@10": 0.1757,
+   "queries": 103
+  },
+  "bm25=english,weight=1.0,rerank=grouped": {
+   "first_stage_ndcg@10": 0.1551,
+   "final_ndcg@10": 0.1219,
+   "queries": 103
+  },
+  "bm25=english,weight=1.0,rerank=colbert": {
+   "first_stage_ndcg@10": 0.1551,
+   "final_ndcg@10": 0.1728,
+   "queries": 103
+  },
+  "bm25=english,weight=1.0,rerank=auto": {
+   "first_stage_ndcg@10": 0.1551,
+   "final_ndcg@10": 0.1757,
+   "queries": 103
+  },
+  "bm25=english,weight=0.5,rerank=grouped": {
+   "first_stage_ndcg@10": 0.1646,
+   "final_ndcg@10": 0.1152,
+   "queries": 103
+  },
+  "bm25=english,weight=0.5,rerank=colbert": {
+   "first_stage_ndcg@10": 0.1646,
+   "final_ndcg@10": 0.1728,
+   "queries": 103
+  },
+  "bm25=english,weight=0.5,rerank=auto": {
+   "first_stage_ndcg@10": 0.1646,
+   "final_ndcg@10": 0.1757,
+   "queries": 103
+  },
+  "bm25=english,weight=0.0,rerank=grouped": {
+   "first_stage_ndcg@10": 0.1728,
+   "final_ndcg@10": 0.115,
+   "queries": 103
+  },
+  "bm25=english,weight=0.0,rerank=colbert": {
+   "first_stage_ndcg@10": 0.1728,
+   "final_ndcg@10": 0.1728,
+   "queries": 103
+  },
+  "bm25=english,weight=0.0,rerank=auto": {
+   "first_stage_ndcg@10": 0.1728,
+   "final_ndcg@10": 0.1757,
+   "queries": 103
+  }
+ },
+ "chosen": "bm25=plain,weight=1.0,rerank=auto",
+ "documents": {
+  "biology": 57359,
+  "economics": 50220,
+  "psychology": 52835,
+  "robotics": 61961
+ },
+ "expansion": {
+  "dev_grid": {
+   "bm25=plain,weight=1.0,rerank=auto,expand=bm25": {
+    "first_stage_ndcg@10": 0.3052,
+    "final_ndcg@10": 0.1763,
+    "queries": 103
+   },
+   "bm25=plain,weight=0.5,rerank=auto,expand=bm25": {
+    "first_stage_ndcg@10": 0.2696,
+    "final_ndcg@10": 0.1757,
+    "queries": 103
+   },
+   "bm25=plain,weight=1.0,rerank=auto,expand=append": {
+    "first_stage_ndcg@10": 0.3908,
+    "final_ndcg@10": 0.3085,
+    "queries": 103
+   },
+   "bm25=plain,weight=0.5,rerank=auto,expand=append": {
+    "first_stage_ndcg@10": 0.3735,
+    "final_ndcg@10": 0.3085,
+    "queries": 103
+   },
+   "bm25=plain,weight=1.0,rerank=auto,expand=replace": {
+    "first_stage_ndcg@10": 0.4276,
+    "final_ndcg@10": 0.3817,
+    "queries": 103
+   },
+   "bm25=plain,weight=0.5,rerank=auto,expand=replace": {
+    "first_stage_ndcg@10": 0.42,
+    "final_ndcg@10": 0.3815,
+    "queries": 103
+   }
+  },
+  "chosen": "bm25=plain,weight=1.0,rerank=auto,expand=replace",
+  "better_than_unexpanded_on_dev": true
+ },
+ "test": {
+  "economics": {
+   "round8_setting": {
+    "first_stage_ndcg@10": 0.1794,
+    "final_ndcg@10": 0.1401,
+    "queries": 103
+   },
+   "chosen": {
+    "first_stage_ndcg@10": 0.1794,
+    "final_ndcg@10": 0.1885,
+    "queries": 103
+   },
+   "no_bm25": {
+    "first_stage_ndcg@10": 0.1885,
+    "final_ndcg@10": 0.1293,
+    "queries": 103
+   },
+   "chosen_with_expansion": {
+    "first_stage_ndcg@10": 0.2484,
+    "final_ndcg@10": 0.2532,
+    "queries": 103
+   }
+  },
+  "psychology": {
+   "round8_setting": {
+    "first_stage_ndcg@10": 0.1512,
+    "final_ndcg@10": 0.1782,
+    "queries": 101
+   },
+   "chosen": {
+    "first_stage_ndcg@10": 0.1512,
+    "final_ndcg@10": 0.214,
+    "queries": 101
+   },
+   "no_bm25": {
+    "first_stage_ndcg@10": 0.2131,
+    "final_ndcg@10": 0.169,
+    "queries": 101
+   },
+   "chosen_with_expansion": {
+    "first_stage_ndcg@10": 0.3128,
+    "final_ndcg@10": 0.3275,
+    "queries": 101
+   }
+  },
+  "robotics": {
+   "round8_setting": {
+    "first_stage_ndcg@10": 0.1491,
+    "final_ndcg@10": 0.1467,
+    "queries": 101
+   },
+   "chosen": {
+    "first_stage_ndcg@10": 0.1491,
+    "final_ndcg@10": 0.1467,
+    "queries": 101
+   },
+   "no_bm25": {
+    "first_stage_ndcg@10": 0.1535,
+    "final_ndcg@10": 0.1281,
+    "queries": 101
+   },
+   "chosen_with_expansion": {
+    "first_stage_ndcg@10": 0.1931,
+    "final_ndcg@10": 0.1925,
+    "queries": 101
+   }
+  }
+ },
+ "hotpot_both_gold@5_with_second_hop": {
+  "round8_setting": {
+   "dev": 0.895,
+   "test": 0.882
+  },
+  "chosen": {
+   "dev": 0.895,
+   "test": 0.882
+  }
+ }
+}
+```
+
+## bright_expansions
+
+```
+{
+ "queries": 408,
+ "empty": 0,
+ "words_p50": 163,
+ "seconds": 348.0,
+ "file": "r10_bright_expansions.json"
+}
+```
+
+## hotpot_answers
+
+```
+{
+ "questions": 500,
+ "one_step": {
+  "exact_match": 0.314,
+  "f1": 0.4062,
+  "abstained": 0.448,
+  "errors": 0,
+  "seconds_p50_at_8_concurrent": 5.07
+ },
+ "second_hop": {
+  "exact_match": 0.334,
+  "f1": 0.4357,
+  "abstained": 0.41,
+  "errors": 0,
+  "seconds_p50_at_8_concurrent": 5.21
+ },
+ "second_hop_echo_filter": {
+  "exact_match": 0.312,
+  "f1": 0.4027,
+  "abstained": 0.454,
+  "errors": 0,
+  "seconds_p50_at_8_concurrent": 5.09
+ },
+ "second_hop_follow_ups": {
+  "exact_match": 0.35,
+  "f1": 0.4486,
+  "abstained": 0.402,
+  "errors": 0,
+  "seconds_p50_at_8_concurrent": 10.82,
+  "follow_up_queries_mean": 1.774,
+  "example_follow_ups": [
+   [
+    "Alexander Kerensky was defeated and destroyed by the Bolsheviks in the course of a civil war that ended when ?",
+    [
+     "Russian Civil War end date October 1922",
+     "Russian Civil War end date October 1922"
+    ]
+   ],
+   [
+    "Which came to market first, \"Hey Pa! There's a Goat on the Roof\" or \"Poleconomy\"",
+    [
+     "Hey Pa! There's a Goat on the Roof vs Poleconomy release year comparison",
+     "Hey Pa! There's a Goat on the Roof vs Poleconomy market release year comparison"
+    ]
+   ],
+   [
+    "Where was the music festival Billy McFarland was charged with wire fraud for supposed to take place?",
+    [
+     "Fyre Festival location Great Exuma Bahamian island",
+     "Fyre Festival location in 2017"
+    ]
+   ],
+   [
+    "Which retired Argentine footballer who played as a forward was a main player for Valencia CF?",
+    [
+     "Mario Kempes Valencia CF forward",
+     "Mario Kempes Valencia CF forward"
+    ]
+   ],
+   [
+    "What production company co-owned by Kevin Loader and Rodger Michell produced My Cousin Rachel?",
+    [
+     "What production company co-owned by Kevin Loader and Roger Michell produced My Cousin Rachel?",
+     "What production company co-owned by Kevin Loader and Roger Michell produced My Cousin Rachel?"
+    ]
+   ],
+   [
+    "In which year did this division, where Cleveland Browns placed fourth in 2009, adopt its current name?",
+    []
+   ],
+   [
+    "What country is the member of Gujarat Legislative Assembly and parliament representing?",
+    []
+   ],
+   [
+    "Which sport has been played at the BayArena in Leverkusen, Germany, since 1958?",
+    []
+   ]
+  ]
+ }
+}
+```
+
+## musique_full
+
+```
+{
+ "questions": 500,
+ "paragraph_words_p50": 73,
+ "paragraph_words_p95": 178,
+ "share_over_120_words": 0.1747,
+ "one_step": {
+  "all_supporting@5": 0.244,
+  "recall@5": 0.5915,
+  "all_supporting@10": 0.378,
+  "recall@10": 0.6805,
+  "answers": {
+   "exact_match": 0.04,
+   "f1": 0.0469,
+   "abstained": 0.9233,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 5.27
+  }
+ },
+ "second_hop": {
+  "all_supporting@5": 0.266,
+  "recall@5": 0.5773,
+  "all_supporting@10": 0.418,
+  "recall@10": 0.6997,
+  "answers": {
+   "exact_match": 0.0333,
+   "f1": 0.0408,
+   "abstained": 0.9167,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 5.57
+  }
+ },
+ "second_hop_follow_ups": {
+  "follow_up_queries_mean@5": 1.706,
+  "all_supporting@5": 0.396,
+  "recall@5": 0.6703,
+  "follow_up_queries_mean@10": 1.814,
+  "example_follow_ups": [
+   [
+    "What character in Princess Diaries does the actress play who was also a cast member in On Golden Pond?",
+    [
+     "Julie Andrews cast in Princess Diaries",
+     "Julie Andrews cast member in Princess Diaries and On Golden Pond"
+    ]
+   ],
+   [
+    "What is the capital of the county where Fort Deposit is located?",
+    [
+     "What is the capital of Lowndes County, Alabama?",
+     "What is the capital of Lowndes County, Alabama?"
+    ]
+   ],
+   [
+    "When was the death penalty abolished in the country near the country where the writer of The Book Thief is a citizen of?",
+    [
+     "Markus Zusak citizenship country death penalty abolition date",
+     "Markus Zusak citizen country death penalty abolition date"
+    ]
+   ],
+   [
+    "Who is the creator of Mickey Mouse's spouse?",
+    [
+     "Creator of Minnie Mouse",
+     "Creator of Minnie Mouse"
+    ]
+   ],
+   [
+    "Drives attached via an industry standard connector remain powered when the computer is off using what Dell feature?",
+    [
+     "Dell PowerShare feature when computer is off",
+     "Dell PowerShare feature USB sleep-and-charge functionality when computer is off"
+    ]
+   ],
+   [
+    "When was the star to which Solgr\u00e4nd is named after discovered to be the center of the solar system?",
+    [
+     "When was the Sun, the center of the solar system, discovered to be the center of the solar system?",
+     "When was heliocentrism first proposed as a scientific model?"
+    ]
+   ],
+   [
+    "Who founded the political party of Dimuthu Bandara Abayakoon?",
+    [
+     "Who founded the Janatha Vimukthi Peramuna?",
+     "Who founded the Janatha Vimukthi Peramuna?"
+    ]
+   ],
+   [
+    "What does the U.S. believe caused the country where the birthplace of Yaovabha Bongsanid is located, to help Japan?",
+    [
+     "What did the United States believe caused Thailand to help Japan during World War II?",
+     "What did the United States believe caused Thailand to assist Japan during World War II?"
+    ]
+   ]
+  ],
+  "all_supporting@10": 0.532,
+  "recall@10": 0.777,
+  "answers": {
+   "exact_match": 0.05,
+   "f1": 0.0609,
+   "abstained": 0.8867,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 11.32
+  }
+ }
+}
+```
+
+## poisoning2
+
+```
+{
+ "questions": 100,
+ "planted_written": 300,
+ "planted_stating_the_false_answer": 0.9567,
+ "dedupe_threshold": 0.9985,
+ "clean": {
+  "none": {
+   "exact_match": 0.29,
+   "f1": 0.3958,
+   "abstained": 0.43,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 5.24,
+   "false_answer_given": 0.0
+  },
+  "echo_filter": {
+   "exact_match": 0.29,
+   "f1": 0.3671,
+   "abstained": 0.47,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 5.19,
+   "false_answer_given": 0.0
+  },
+  "near_duplicates": {
+   "exact_match": 0.27,
+   "f1": 0.375,
+   "abstained": 0.46,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 5.25,
+   "false_answer_given": 0.0
+  },
+  "both": {
+   "exact_match": 0.26,
+   "f1": 0.3413,
+   "abstained": 0.5,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 5.17,
+   "false_answer_given": 0.0
+  }
+ },
+ "echo": {
+  "planted_pairs_above_threshold": 0.9267,
+  "planted_in_top5_mean": 3.0,
+  "none": {
+   "exact_match": 0.22,
+   "f1": 0.3027,
+   "abstained": 0.27,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 5.05,
+   "false_answer_given": 0.21
+  },
+  "echo_filter": {
+   "exact_match": 0.17,
+   "f1": 0.2265,
+   "abstained": 0.64,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 3.02,
+   "false_answer_given": 0.0
+  },
+  "near_duplicates": {
+   "exact_match": 0.32,
+   "f1": 0.4467,
+   "abstained": 0.14,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 5.34,
+   "false_answer_given": 0.14
+  },
+  "both": {
+   "exact_match": 0.27,
+   "f1": 0.3356,
+   "abstained": 0.54,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 4.46,
+   "false_answer_given": 0.0
+  }
+ },
+ "no_echo": {
+  "planted_pairs_above_threshold": 0.69,
+  "planted_in_top5_mean": 2.85,
+  "none": {
+   "exact_match": 0.19,
+   "f1": 0.2561,
+   "abstained": 0.39,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 4.73,
+   "false_answer_given": 0.16
+  },
+  "echo_filter": {
+   "exact_match": 0.19,
+   "f1": 0.2569,
+   "abstained": 0.49,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 4.12,
+   "false_answer_given": 0.1
+  },
+  "near_duplicates": {
+   "exact_match": 0.25,
+   "f1": 0.3793,
+   "abstained": 0.26,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 5.21,
+   "false_answer_given": 0.13
+  },
+  "both": {
+   "exact_match": 0.24,
+   "f1": 0.353,
+   "abstained": 0.34,
+   "errors": 0,
+   "seconds_p50_at_8_concurrent": 4.86,
+   "false_answer_given": 0.09
+  }
+ }
+}
+```
+
+## injection2
+
+```
+{
+ "test_questions": 200,
+ "generated_injections": 40,
+ "generated_examples": [
+  "QQCODEQQ",
+  "QQCODEQQ",
+  "QQCODEQQ",
+  "<!-- QQCODEQQ -->",
+  "QQCODEQQ",
+  "QQCODEQQ",
+  "QQCODEQQ",
+  "QQCODEQQ",
+  "QQCODEQQ",
+  "QQCODEQQ"
+ ],
+ "classifier": {
+  "model": "protectai/deberta-v3-base-prompt-injection-v2",
+  "commit": "90c9989b1a342275dd0d1a95aad283c04e075671",
+  "threshold_1pct_fp_on_dev": 0.5
+ },
+ "detection": {
+  "patterns": {
+   "clean_passages_flagged": 0.0,
+   "detected_handwritten_end": 0.09,
+   "detected_handwritten_middle": 0.09,
+   "detected_generated_end": 0.0,
+   "detected_generated_middle": 0.0
+  },
+  "classifier_0.5": {
+   "clean_passages_flagged": 0.011,
+   "detected_handwritten_end": 0.68,
+   "detected_handwritten_middle": 0.655,
+   "detected_generated_end": 0.04,
+   "detected_generated_middle": 0.04,
+   "detected_with_patterns": 0.3563
+  },
+  "classifier_calibrated": {
+   "clean_passages_flagged": 0.011,
+   "detected_handwritten_end": 0.68,
+   "detected_handwritten_middle": 0.655,
+   "detected_generated_end": 0.04,
+   "detected_generated_middle": 0.04,
+   "detected_with_patterns": 0.3563
+  },
+  "llm": {
+   "clean_passages_flagged": 0.005,
+   "detected_handwritten_end": 0.88,
+   "detected_handwritten_middle": 0.8,
+   "detected_generated_end": 0.05,
+   "detected_generated_middle": 0.05,
+   "detected_with_patterns": 0.4525
+  }
+ },
+ "end_to_end": {
+  "no_scanner": {
+   "attack_success_handwritten": 0.0475,
+   "attack_success_generated": 0.0
+  },
+  "patterns": {
+   "attack_success_handwritten": 0.045,
+   "attack_success_generated": 0.0,
+   "clean_questions": {
+    "exact_match": 0.26,
+    "f1": 0.3604,
+    "abstained": 0.485,
+    "errors": 0,
+    "seconds_p50_at_8_concurrent": 5.07
+   }
+  },
+  "patterns_and_classifier": {
+   "attack_success_handwritten": 0.005,
+   "attack_success_generated": 0.0,
+   "clean_questions": {
+    "exact_match": 0.255,
+    "f1": 0.3554,
+    "abstained": 0.49,
+    "errors": 0,
+    "seconds_p50_at_8_concurrent": 5.1
+   }
+  },
+  "patterns_and_llm": {
+   "attack_success_handwritten": 0.0075,
+   "attack_success_generated": 0.0,
+   "clean_questions": {
+    "exact_match": 0.255,
+    "f1": 0.3529,
+    "abstained": 0.49,
+    "errors": 0,
+    "seconds_p50_at_8_concurrent": 7.62
+   }
+  }
+ }
+}
+```
+
+## sglang
+
+```
+{
+ "flags": [],
+ "mem_fraction_static": 0.7
+}
+```
+
