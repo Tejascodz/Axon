@@ -15,12 +15,19 @@ llm          The answering LLM is asked, in one call per question, which passage
 
 `threshold` for the classifier is set on clean passages from held-out questions (a target false
 positive rate), never on the injected test passages.
+
+Round 10 (200 HotpotQA questions, 30 hand-written injections at the end or in the middle of a
+passage): the patterns caught 9%, the classifier 68% / 66% (end / middle) and the LLM 88% / 80%;
+1.1% and 0.5% of clean passages were withheld. Attacks that succeeded fell from 4.5% to 0.5% with
+the classifier and 0.75% with the LLM, with no measurable cost in exact match (0.26 -> 0.255) and
++0.03 s / +2.5 s per question. The deployment turns the classifier on (deploy/docker-compose.yml).
 """
 from __future__ import annotations
 
 import re
 
 DEFAULT_MODEL = "protectai/deberta-v3-base-prompt-injection-v2"
+DEFAULT_REVISION = "90c9989b1a342275dd0d1a95aad283c04e075671"   # the commit measured in round 10
 _SEG = re.compile(r"(?<=[.!?])\s+|\n+|(?=<!--)|(?<=-->)")
 
 
@@ -39,10 +46,11 @@ class Classifier:
     def __init__(self, model: str = DEFAULT_MODEL, device: str | None = None, threshold: float = 0.5,
                  revision: str | None = None, batch_size: int = 64):
         import torch
+        revision = revision or (DEFAULT_REVISION if model == DEFAULT_MODEL else None)
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tok = AutoTokenizer.from_pretrained(model, revision=revision)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model, revision=revision).to(self.device).eval()
+        self.model = AutoModelForSequenceClassification.from_pretrained(model, revision=revision, use_safetensors=True).to(self.device).eval()
         if torch.device(self.device).type == "cuda":
             self.model.half()
         labels = {int(k): v.upper() for k, v in self.model.config.id2label.items()}

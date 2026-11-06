@@ -44,7 +44,8 @@ Protection
     (nyaya.expand). Up to N extra LLM calls. Off (0) by default.
   * AXON_INJECTION_DETECTOR=classifier|llm: withhold passages a learned prompt-injection detector flags,
     as well as those the pattern scanner flags (nyaya.injection; AXON_INJECTION_MODEL,
-    AXON_INJECTION_THRESHOLD, AXON_INJECTION_DEVICE, AXON_INJECTION_REVISION). Off by default.
+    AXON_INJECTION_THRESHOLD, AXON_INJECTION_DEVICE, AXON_INJECTION_REVISION). Off here; the
+    deployment (deploy/docker-compose.yml) turns the classifier on, as round 10 measured it.
   * AXON_DEVICE / AXON_VERIFY_DEVICE (e.g. cuda:0, cuda:1, cpu): where the retrieval model and the
     checker run. Keep them off the LLM server's GPU: sharing one 15 GB GPU caused out-of-memory errors.
   * Request sizes are capped (AXON_MAX_DOCS, AXON_MAX_CHARS) so one request cannot exhaust memory.
@@ -203,7 +204,7 @@ def detector():
             _state["detector"] = LLMDetector() if kind == "llm" else Classifier(
                 os.environ.get("AXON_INJECTION_MODEL", DEFAULT_MODEL), device=os.environ.get("AXON_INJECTION_DEVICE") or None,
                 threshold=float(os.environ.get("AXON_INJECTION_THRESHOLD", "0.5")),
-                revision=os.environ.get("AXON_INJECTION_REVISION") or None)
+                revision=os.environ.get("AXON_INJECTION_REVISION") or None)   # None: the measured commit
         return _state["detector"]
 
 

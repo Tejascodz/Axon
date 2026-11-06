@@ -263,6 +263,45 @@ The threshold was chosen on 250 questions; results are on the other 250 (1,664 p
 - 0 cross-tenant results in 2,000 results (round 5): at most 0.15%;
 - 0 cross-tenant answers in 5,453 under load (rounds 7 and 7b): at most 0.06% per answer.
 
+### Hard benchmarks, attacks and fixes (rounds 8 to 10)
+
+Round 8 measured the system where it is weakest: multi-hop questions (HotpotQA, MuSiQue), reasoning-heavy retrieval (BRIGHT), noisy questions, planted false documents, prompt injections written after the scanner, and hostile tenants. Round 10 fixed what it could, choosing each fix from published work and measuring it the same way: settings chosen on held-out data (BRIGHT: biology), reported on test data (economics, psychology, robotics; HotpotQA test questions). Full tables: `results/r8_run1/ROUND8.md`, `results/r10_run1/ROUND10.md`.
+
+**Retrieval**
+
+| Benchmark | Before | After round 10 | What changed |
+|---|---|---|---|
+| HotpotQA, both gold passages in top 5 (500 test questions) | 0.826 | **0.882** | second hop through linked titles (round 8; on in the server) |
+| MuSiQue, all supporting passages in top 10 (500 questions) | 0.378 | 0.418, then **0.532** | second hop; then up to two LLM-written follow-up searches (IRCoT, ChainRAG) |
+| MuSiQue, same in top 5 | 0.244 | **0.396** | the same |
+| BRIGHT nDCG@10, economics | 0.140 | 0.189, then **0.253** | re-rank chosen by query length; then LLM query expansion |
+| BRIGHT nDCG@10, psychology | 0.178 | 0.214, then **0.328** | the same |
+| BRIGHT nDCG@10, robotics | 0.147 | 0.147, then **0.193** | the same |
+
+Query expansion asks the LLM what a document answering the question would contain and searches with that text instead of the question (BRIGHT's reasoning queries; query2doc; HyDE). Of three ways to use it, replacing the question did best on biology (0.176 to 0.382) and was the one tested. It costs one LLM call before retrieval and was not measured on short factual questions, so it is off by default. On BRIGHT, BM25 fusion and English stemming did not change the final ranking; before expansion, the gain came from switching to plain ColBERT re-ranking for long questions. Systems trained for reasoning retrieval score higher still; nothing here was trained.
+
+**Answers** (Qwen3-4B-Instruct on a T4, citations required)
+
+| | Exact match | F1 | Abstained | Latency p50 (8 concurrent) |
+|---|---|---|---|---|
+| HotpotQA, one search | 0.314 | 0.406 | 0.448 | 5.1 s |
+| + second hop | 0.334 | 0.436 | 0.410 | 5.2 s |
+| + follow-up searches | 0.350 | 0.449 | 0.402 | 10.8 s |
+| MuSiQue, best | 0.050 | 0.061 | 0.887 | 11.3 s |
+
+Better retrieval only partly reaches the answers. On MuSiQue the 4B model abstains on almost 90% of questions, although all supporting passages are in the top 10 for 53% of them: composing two to four facts is mostly beyond it. A larger generator is the next step there.
+
+**Attacks**
+
+| Attack | No defence | Defence | Cost on clean questions |
+|---|---|---|---|
+| 3 planted passages that restate the question and give a false answer | false answer 21% | 0% with the echo filter (on in the server) | exact match 0.334 to 0.312 (HotpotQA, 500) |
+| the same, paraphrased | 16% | 9% with echo filter and near-duplicate filter | exact match 0.29 to 0.26 (100) |
+| 30 hand-written injections, end or middle of a passage | patterns detect 9%; 4.5% of attacks succeed | classifier detects 68%: **0.5%** succeed (LLM check: 0.75%) | 1.1% of clean passages withheld; exact match 0.260 to 0.255 |
+| 440 questions written to pull another tenant's documents | | 0 of 4,400 results crossed tenants | |
+
+Round 9 found that the pattern scanner catches 10% of injections written after it. Round 10 adds a learned detector, ProtectAI's DeBERTa-v3 prompt-injection classifier, applied sentence by sentence (sentence-level detection works best: Chen et al., ACL 2025). The deployment turns it on. Asking each passage alone and voting (RobustRAG-style) was tried in round 9 and dropped: it cut exact match on clean questions from 0.27 to 0.02. Round 10 also tried injections written by the LLM itself, but most of them came out as the code alone, without an instruction, so that part measured nothing; the script now rejects such replies.
+
 ## Run it in production
 
 `deploy/` holds a complete stack. Every published port binds to localhost; put a TLS proxy in front of Axon.
@@ -584,6 +623,8 @@ Full tables are in `results/ROUND4.md`.
 **Round 6, Kaggle T4** (index at scale): see "Measured at scale". The 300,000-passage run was cut to 150,000 by the script's build-time limit (PLAID's clustering made the 100,000 build take 59 minutes), and run later without PLAID in round 7. Round 6's dependency check failed twice: once on GPU memory (the measuring process still held 14 GB), then because the patched sentence-transformers cannot load LateOn.
 
 **Round 7 / 7b, Kaggle T4 x2**: see "Production checks" and "Claim-level evidence checking". Round 7's load test found GPU out-of-memory errors (everything on one GPU), a live update that failed for the same reason, and an artefact in how tenants were assigned. Round 7b re-ran it after the fixes and found the tokenizer concurrency bug.
+
+**Rounds 8 and 10, Kaggle T4 x2**: see "Hard benchmarks, attacks and fixes". Round 8 (with round 9's attack tests) found the weak spots; round 10 ran the fixes in about 2.5 h with no failed step. One part of round 10 measured nothing: most injections the LLM was asked to write came back as the code alone, and the script now rejects those.
 
 MultiConIR's "T2 Positive > HN1" uses the same document pairs as "T1 with 10 conditions", so it is reported once.
 

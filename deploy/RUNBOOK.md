@@ -34,6 +34,19 @@ curl -s localhost:8080/ask -H "Authorization: Bearer $(cat deploy/secrets/axon_a
 
 Grafana: `http://localhost:3000`. User `admin`, password in `deploy/secrets/grafana_admin_password`.
 
+Answer-time options (`deploy/.env`; each was measured in round 10, `results/ROUND10.md`):
+
+| Setting | Default here | What it buys | What it costs |
+|---|---|---|---|
+| `AXON_INJECTION_DETECTOR=classifier` | on | injection attacks that succeed 4.5% -> 0.5% (30 hand-written attacks) | 1.1% of clean passages withheld; +0.7 GB RAM; +0.03 s per question on a T4 (CPU not measured) |
+| `AXON_INJECTION_DETECTOR=llm` | off | 0.75% attack success, 0.5% of clean passages withheld | one LLM call per question (+2.5 s) |
+| `AXON_ECHO_FILTER=1` | on | planted passages that restate the question: false answers 21% -> 0% | HotpotQA exact match 0.334 -> 0.312 on clean questions |
+| `AXON_FOLLOW_UPS=2` | off | MuSiQue all supporting passages in top 10: 0.42 -> 0.53; HotpotQA exact match 0.334 -> 0.350 | about twice the latency (5.2 s -> 10.8 s at 8 concurrent) |
+| `AXON_EXPAND=replace` | off | BRIGHT nDCG@10 0.18 -> 0.26 on long reasoning questions | one LLM call before retrieval; not measured on short factual questions |
+
+The classifier is downloaded on first start, at the commit in `AXON_INJECTION_REVISION`. If it cannot be
+loaded, `/ready` stays false: the server does not run without the detector it was configured with.
+
 GPU for Axon itself: the image is CPU-only by default. That is fine for re-ranking about 100
 candidates per query. For large exact-search indexes, build with
 `--build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu126` and give the `axon` service a GPU
