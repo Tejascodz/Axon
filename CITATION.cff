@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Axon: retrieval-augmented generation on late-interaction retrieval"
+type: software
+authors:
+  - given-names: Tejas
+    family-names: S
+repository-code: "https://github.com/Tejascodz/Axon"
+license: MIT
+version: 1.0.0
+date-released: 2026-11-18
+keywords:
+  - retrieval-augmented generation
+  - ColBERT
+  - late interaction
+  - information retrieval
+  - prompt injection
