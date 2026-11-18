@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "axon-retrieval"
 version = "1.0.0"
-description = "Condition-aware late-interaction re-ranking with per-condition evidence"
+description = "Retrieval-augmented generation on late-interaction (ColBERT) retrieval, run as a service"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
