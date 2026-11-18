@@ -60,10 +60,13 @@ python -m nyaya.rag ask --index index --no_llm --k 2 "How long do I have to send
 ```
 <!-- quickstart:end -->
 
-Expected output (timings vary):
+Expected output, after pip's own messages (timings vary):
 
 ```text
-QUICKSTART_OUTPUT
+encoded 3/3
+indexed 3 chunks from docs in 0.24 s (0.0 MB of vectors)
+[c0] returns.md: Unused items can be returned within 30 days of delivery for a full refund....
+[c1] shipping.md: Orders ship within two business days. Express delivery arrives the next business day....
 ```
 
 `--no_llm` stops after retrieval. To get answers, point Axon at any OpenAI-compatible server and drop the flag:
